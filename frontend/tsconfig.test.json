@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "module": "CommonJS",
+    "target": "esnext",
+    "esModuleInterop": true,
+    "strict": true,
+    "outDir": "avatar-tests",
+    "rootDir": "avatars"
+  },
+  "include": ["avatars/test-avatars.ts"]
+}

@@ -3,6 +3,76 @@ import { micah, avataaars } from '@dicebear/collection';
 import type { Options as MicahOptions } from '@dicebear/micah';
 import type { Options as AvataaarsOptions } from '@dicebear/avataaars';
 
+// ---------- Curated Avataaar options ----------
+
+const avataaarsMaleOptions: Partial<AvataaarsOptions> = {
+  top: [
+    'bun',
+    'curly',
+    'dreads',
+    'dreads01',
+    'dreads02',
+    'frizzle',
+    'fro',
+    'froBand',
+    'shaggy',
+    'shaggyMullet',
+    'shavedSides',
+    'shortCurly',
+    'shortFlat',
+    'shortRound',
+    'shortWaved',
+    'sides',
+    'theCaesar',
+    'theCaesarAndSidePart',
+  ],
+  facialHair: ['beardMedium', 'beardLight', 'moustacheFancy', 'moustacheMagnum'],
+  clothing: ['blazerAndShirt', 'blazerAndSweater', 'collarAndSweater', 'hoodie', 'shirtCrewNeck'],
+  clothingGraphic: ['bat', 'cumbia', 'deer', 'diamond', 'hola', 'pizza', 'resist', 'bear', 'skullOutline', 'skull'],
+};
+
+const avataaarsFemaleOptions: Partial<AvataaarsOptions> = {
+  top: [
+    'bigHair',
+    'bob',
+    'bun',
+    'curly',
+    'curvy',
+    'straight01',
+    'straight02',
+    'straightAndStrand',
+    'longButNotTooLong',
+    'miaWallace',
+  ],
+  facialHairProbability: 0,
+  clothing: ['blazerAndShirt', 'collarAndSweater', 'graphicShirt', 'hoodie', 'shirtScoopNeck', 'shirtVNeck'],
+  clothingGraphic: ['bat', 'cumbia', 'deer', 'diamond', 'hola', 'pizza', 'resist', 'bear', 'skullOutline', 'skull'],
+};
+
+// ---------- Curated Micah options ----------
+
+const micahMaleOptions: Partial<MicahOptions> = {
+  hair: ['dannyPhantom', 'dougFunny', 'fonze', 'mrClean', 'mrT', 'turban'],
+  facialHair: ['beard', 'scruff'],
+  earringsProbability: 5,
+};
+
+const micahFemaleOptions: Partial<MicahOptions> = {
+  hair: ['dannyPhantom', 'full', 'pixie', 'turban'],
+  facialHairProbability: 0,
+  earringsProbability: 75,
+};
+
+// ---------- Color Palettes ----------
+
+export const skinColorPalette = ['f2d5d8', 'ddb7a0', 'ce967d', 'bb876f', 'a37761', '8a6652', '715542', '584433'];
+export const clothingColorPalette = ['2c3e50', '34495e', '7f8c8d', '95a5a6', 'bdc3c7', 'ecf0f1'];
+
+// ---------- Micah Feature Options ----------
+
+const micahShirtOptions = ['collared', 'crew', 'open'] as const;
+const micahEarsOptions = ['attached', 'detached'] as const;
+
 export type Emotion =
   | 'happy'
   | 'excited'
@@ -18,32 +88,68 @@ export type Emotion =
 export type Persona = {
   id: string;
   style: 'micah' | 'avataaars';
-  /** Your app-level metadata (not passed to DiceBear styles) */
   gender?: 'male' | 'female';
-  accessoriesProbability?: number; // 0..100 (your app can use this as needed)
-  facialHairProbability?: number;  // 0..100
+  facialHairProbability?: number;
+  skinColor?: string[];
+  hairColor?: string[];
+  ears?: (typeof micahEarsOptions)[number][];
+  shirt?: (typeof micahShirtOptions)[number][];
+  shirtColor?: string[];
+  clothesColor?: string[];
 };
 
 // ---------- Public API ----------
 
-/** Render a persona avatar as SVG text with the given emotion. */
 export function renderPersonaAvatar(p: Persona, emotion: Emotion): string {
-  const seed = `${p.id}:${emotion}`;
+  const seed = p.id;
 
   if (p.style === 'avataaars') {
     const r = avataaarsEmotionMap[emotion];
     const opts: Partial<AvataaarsOptions> = {
-      // Focus on face parts we control for expression;
-      // Add additional fixed styling here if you want (top, accessories, etc.)
       eyes: r.eyes,
       eyebrows: r.eyebrows,
       mouth: r.mouth,
     };
+
+    if (p.gender === 'male') {
+      Object.assign(opts, avataaarsMaleOptions);
+      opts.facialHairProbability = p.facialHairProbability ?? 50;
+    } else if (p.gender === 'female') {
+      Object.assign(opts, avataaarsFemaleOptions);
+    }
+
+    opts.accessoriesProbability = 0;
+
+    if (p.skinColor) opts.skinColor = p.skinColor;
+    if (p.hairColor) {
+      opts.hairColor = p.hairColor;
+      opts.facialHairColor = p.hairColor;
+    }
+    if (p.clothesColor) opts.clothesColor = p.clothesColor;
+
     return renderAvatarSVG('avataaars', seed, opts);
   }
 
-  // Micah: map emotion hints to actual options available in the schema
   const opts = buildMicahOptions(emotion);
+
+  if (p.gender === 'male') {
+    Object.assign(opts, micahMaleOptions);
+    opts.facialHairProbability = p.facialHairProbability ?? 50;
+  } else if (p.gender === 'female') {
+    Object.assign(opts, micahFemaleOptions);
+  }
+
+  opts.glassesProbability = 0;
+
+  if (p.skinColor) opts.baseColor = p.skinColor;
+  if (p.hairColor) {
+    opts.hairColor = p.hairColor;
+    opts.facialHairColor = p.hairColor;
+  }
+  if (p.ears) opts.ears = p.ears;
+  if (p.shirt) opts.shirt = p.shirt;
+  if (p.shirtColor) opts.shirtColor = p.shirtColor;
+
   return renderAvatarSVG('micah', seed, opts);
 }
 
@@ -65,16 +171,13 @@ export function renderAvatarSVG(
   options: Record<string, unknown> = {}
 ): string {
   const impl = style === 'micah' ? micah : avataaars;
-  // The overloads give good DX for callers; we erase generics at the call site to avoid union clashes.
   return createAvatar(impl as any, { seed, ...(options as any) }).toString();
 }
 
-// ---------- Avataaars emotion recipes (use only valid option names) ----------
-// Reference-safe sets (subset of the full style to stay compatible across versions).
 type AvKeys = Required<Pick<AvataaarsOptions, 'eyes' | 'eyebrows' | 'mouth'>>;
 const avataaarsEmotionMap: Record<Emotion, AvKeys> = {
   happy: {
-    eyes: ['happy', 'wink', 'winkWacky'],
+    eyes: ['happy', 'wink'],
     eyebrows: ['raisedExcited', 'raisedExcitedNatural', 'upDown'],
     mouth: ['smile', 'default'],
   },
@@ -125,15 +228,9 @@ const avataaarsEmotionMap: Record<Emotion, AvKeys> = {
   },
 };
 
-// ---------- Micah mapping (schema-aware “closest match”) ----------
 
-/**
- * Robustly pull the enum values for a given option from the style schema.
- * Micah schema sometimes nests under `properties[key].items.enum` or similar.
- */
 function enumFromSchema(style: any, key: string): string[] {
   const p = style?.schema?.properties?.[key];
-  // Try several common shapes
   return (
     p?.items?.enum ??
     p?.enum ??
@@ -152,13 +249,11 @@ function pickClosest(allowed: string[] = [], hints: string[]): string | undefine
   return undefined;
 }
 
-/** Build Micah options for an emotion using available schema enums. */
 function buildMicahOptions(emotion: Emotion): Partial<MicahOptions> {
   const eyesVals = enumFromSchema(micah as any, 'eyes');
   const browVals = enumFromSchema(micah as any, 'eyebrows');
   const mouthVals = enumFromSchema(micah as any, 'mouth');
 
-  // Hints are intentionally generic; pickClosest chooses a valid actual value from the schema.
   const hints: Record<Emotion, { eyes: string[]; brows: string[]; mouth: string[] }> = {
     happy:      { eyes: ['round', 'eyes'],          brows: ['raised', 'up'],  mouth: ['smile', 'grin'] },
     excited:    { eyes: ['round', 'eyes'],          brows: ['raised'],        mouth: ['laugh', 'open'] },
@@ -178,13 +273,13 @@ function buildMicahOptions(emotion: Emotion): Partial<MicahOptions> {
   const eyebrows = pickClosest(browVals, target.brows);
   const mouth = pickClosest(mouthVals, target.mouth);
 
-  const out: Partial<MicahOptions> = {};
+  const out: Partial<MicahOptions> = {
+    eyesColor: ['000000'],
+    mouthColor: ['000000'],
+  };
   if (eyes) out.eyes = [eyes as any];
   if (eyebrows) out.eyebrows = [eyebrows as any];
   if (mouth) out.mouth = [mouth as any];
   return out;
 }
 
-// ---------- Example (remove in production) ----------
-// const svg = renderPersonaAvatar({ id: 'demo-1', style: 'avataaars' }, 'happy');
-// console.log(svg);
