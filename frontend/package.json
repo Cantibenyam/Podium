@@ -9,6 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+
+    "@deepgram/sdk": "^4.11.2",
+    "@dicebear/collection": "^9.2.4",
+    "@dicebear/core": "^9.2.4",
     "@faker-js/faker": "^8.4.1",
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-tooltip": "^1.2.8",

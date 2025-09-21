@@ -5,11 +5,11 @@ import { avataaarsEmotionMap, Emotion } from './avatar-emotions';
 import { micahEmotionOptions } from './micah-emotions';
 
 type Persona = {
-  id: string;                 // stable ID per bot
+  id: string;
   style: 'micah' | 'avataaars';
   gender: 'male' | 'female';
-  accessoriesProbability?: number; // 0..100
-  facialHairProbability?: number;  // 0..100
+  accessoriesProbability?: number;
+  facialHairProbability?: number;
 };
 
 const styleSchemas = {

@@ -13,7 +13,7 @@ export type Emotion =
 export const avataaarsEmotionMap: Record<Emotion, Record<string, string[]>> = {
   happy: {
     eyes: ['happy', 'wink', 'winkWacky'],
-    eyebrows: ['raisedExcited', 'raisedExcitedNatural','up'],
+    eyebrows: ['raisedExcited', 'raisedExcitedNatural','upDown'],
     mouth: ['smile'],
   },
   excited: {
@@ -28,7 +28,7 @@ export const avataaarsEmotionMap: Record<Emotion, Record<string, string[]>> = {
   },
   attentive: {
     eyes: ['surprised', 'default'],
-    eyebrows: ['upDown', 'upDownNatural', 'defaultNatural','up'],
+    eyebrows: ['upDown', 'upDownNatural', 'defaultNatural'],
     mouth: ['serious', 'default'],
   },
   skeptical: {
