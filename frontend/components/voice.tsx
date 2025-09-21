@@ -9,6 +9,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 type Props = {
   className?: string;
   timerClassName?: string;
+  roomId?: string;
+  apiBase?: string;
 };
 
 type Record = {
@@ -39,6 +41,8 @@ const downloadBlob = (blob: Blob) => {
 export const AudioRecorderWithVisualizer = ({
   className,
   timerClassName,
+  roomId,
+  apiBase,
 }: Props) => {
   // States
   const [isRecording, setIsRecording] = useState<boolean>(false);
@@ -87,6 +91,24 @@ export const AudioRecorderWithVisualizer = ({
   const [finalText, setFinalText] = useState<string>("");
   const [interimText, setInterimText] = useState<string>("");
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const postingRef = useRef<boolean>(false);
+
+  async function postTranscriptChunk(text: string) {
+    if (!roomId || !apiBase || !text) return;
+    if (postingRef.current) return; // simple back-pressure gate
+    postingRef.current = true;
+    try {
+      await fetch(`${apiBase}/webhooks/deepgram`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId, text }),
+      });
+    } catch {
+      // ignore
+    } finally {
+      postingRef.current = false;
+    }
+  }
 
   function startRecording() {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
@@ -138,6 +160,8 @@ export const AudioRecorderWithVisualizer = ({
                 } else {
                   if (text.length > 0) {
                     setFinalText((prev) => (prev ? `${prev} ${text}` : text));
+                    // Send final chunk to backend webhook (buffered there)
+                    postTranscriptChunk(text);
                   }
                   setInterimText("");
                 }
