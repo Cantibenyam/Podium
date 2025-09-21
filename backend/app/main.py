@@ -69,3 +69,29 @@ async def _on_transcript_chunk(payload: dict) -> None:
 
 app.state.event_bus.subscribe("transcript:chunk", _on_transcript_chunk)
 
+
+# Bridge join/leave to WS so frontend sees roster updates
+async def _on_bot_join(payload: dict) -> None:
+    room_id = payload.get("roomId")
+    bot = payload.get("bot")
+    if not room_id or not bot:
+        return
+    await app.state.ws_manager.broadcast_json(
+        room_id,
+        {"event": "join", "payload": {"bot": bot}},
+    )
+
+
+async def _on_bot_leave(payload: dict) -> None:
+    room_id = payload.get("roomId")
+    bot_id = payload.get("botId")
+    if not room_id or not bot_id:
+        return
+    await app.state.ws_manager.broadcast_json(
+        room_id,
+        {"event": "leave", "payload": {"botId": bot_id}},
+    )
+
+
+app.state.event_bus.subscribe("bot:join", _on_bot_join)
+app.state.event_bus.subscribe("bot:leave", _on_bot_leave)
