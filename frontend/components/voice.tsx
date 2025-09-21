@@ -1,12 +1,16 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import { cn } from "@/lib/utils";
-import { Download, Mic, Trash } from "lucide-react";
+import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
+import { AnimatePresence, motion } from "framer-motion";
+import { Download, FileDown, Mic, Trash } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type Props = {
   className?: string;
   timerClassName?: string;
+  roomId?: string;
+  apiBase?: string;
 };
 
 type Record = {
@@ -37,6 +41,8 @@ const downloadBlob = (blob: Blob) => {
 export const AudioRecorderWithVisualizer = ({
   className,
   timerClassName,
+  roomId,
+  apiBase,
 }: Props) => {
   // States
   const [isRecording, setIsRecording] = useState<boolean>(false);
@@ -79,6 +85,30 @@ export const AudioRecorderWithVisualizer = ({
   });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<any>(null);
+  const deepgramRef = useRef<any>(null);
+  const dgOpenRef = useRef<boolean>(false);
+  const transcriptSessionIdRef = useRef<number>(0);
+  const [finalText, setFinalText] = useState<string>("");
+  const [interimText, setInterimText] = useState<string>("");
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const postingRef = useRef<boolean>(false);
+
+  async function postTranscriptChunk(text: string) {
+    if (!roomId || !apiBase || !text) return;
+    if (postingRef.current) return; // simple back-pressure gate
+    postingRef.current = true;
+    try {
+      await fetch(`${apiBase}/webhooks/deepgram`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roomId, text }),
+      });
+    } catch {
+      // ignore
+    } finally {
+      postingRef.current = false;
+    }
+  }
 
   function startRecording() {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
@@ -86,7 +116,7 @@ export const AudioRecorderWithVisualizer = ({
         .getUserMedia({
           audio: true,
         })
-        .then((stream) => {
+        .then(async (stream) => {
           setIsRecording(true);
           // ============ Analyzing ============
           const AudioContext = window.AudioContext;
@@ -94,6 +124,55 @@ export const AudioRecorderWithVisualizer = ({
           const analyser = audioCtx.createAnalyser();
           const source = audioCtx.createMediaStreamSource(stream);
           source.connect(analyser);
+          // ============ Deepgram Live WS ============
+          try {
+            const thisSessionId = ++transcriptSessionIdRef.current;
+            const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY as
+              | string
+              | undefined;
+            if (apiKey) {
+              const deepgram = createClient(apiKey);
+              const dgConn = deepgram.listen.live({
+                model: "nova-3",
+                smart_format: true,
+                interim_results: true,
+                encoding: "linear16",
+                filter_channels: true,
+                endpointing: 10000,
+                vad_events: true,
+                filler_words: true,
+                language: "multi",
+                sample_rate: audioCtx.sampleRate,
+              });
+              dgConn.on(LiveTranscriptionEvents.Open, () => {
+                dgOpenRef.current = true;
+              });
+              dgConn.on(LiveTranscriptionEvents.Close, () => {
+                dgOpenRef.current = false;
+              });
+              dgConn.on(LiveTranscriptionEvents.Transcript, (payload: any) => {
+                if (thisSessionId !== transcriptSessionIdRef.current) return;
+                const alt = payload?.channel?.alternatives?.[0];
+                const text = ((alt?.transcript as string) || "").trim();
+                const isFinal = Boolean((payload as any)?.is_final);
+                if (!isFinal) {
+                  setInterimText(text);
+                } else {
+                  if (text.length > 0) {
+                    setFinalText((prev) => (prev ? `${prev} ${text}` : text));
+                    // Send final chunk to backend webhook (buffered there)
+                    postTranscriptChunk(text);
+                  }
+                  setInterimText("");
+                }
+              });
+              deepgramRef.current = dgConn;
+            } else {
+              console.warn("NEXT_PUBLIC_DEEPGRAM_API_KEY is not set");
+            }
+          } catch (err) {
+            console.warn("Deepgram SDK init failed", err);
+          }
           mediaRecorderRef.current = {
             stream,
             analyser,
@@ -116,10 +195,38 @@ export const AudioRecorderWithVisualizer = ({
           recordingChunks = [];
           // ============ Recording ============
           recorder = new MediaRecorder(stream);
-          recorder.start();
+          // Emit chunks every second so we can download without stopping
+          recorder.start(1000);
           recorder.ondataavailable = (e) => {
             recordingChunks.push(e.data);
           };
+          // ============ AudioWorklet (replace deprecated ScriptProcessorNode) ============
+          try {
+            // load worklet asynchronously without using await in non-async func
+            audioCtx.audioWorklet
+              .addModule("/worklets/pcm-processor.js")
+              .then(() => {
+                const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
+                source.connect(worklet);
+                const volumeSink = audioCtx.createGain();
+                volumeSink.gain.value = 0;
+                worklet.connect(volumeSink);
+                volumeSink.connect(audioCtx.destination);
+                worklet.port.onmessage = (event) => {
+                  if (!deepgramRef.current || !dgOpenRef.current) return;
+                  const channelData = event.data; // Float32Array
+                  const ab = floatTo16BitPCM(channelData);
+                  try {
+                    deepgramRef.current.send(ab);
+                  } catch {}
+                };
+              })
+              .catch((err) => {
+                console.warn("AudioWorklet failed to load", err);
+              });
+          } catch (err) {
+            console.warn("AudioWorklet unavailable; falling back", err);
+          }
         })
         .catch((error) => {
           alert(error);
@@ -127,34 +234,12 @@ export const AudioRecorderWithVisualizer = ({
         });
     }
   }
-  function stopRecording() {
-    recorder.onstop = () => {
-      const recordBlob = new Blob(recordingChunks, {
-        type: "audio/wav",
-      });
-      // Send to Deepgram for processing so it shows up in dashboard
-      uploadToDeepgram(recordBlob).catch((err) => {
-        console.warn("Deepgram upload failed", err);
-      });
-      // Optional: keep local download for debugging
-      downloadBlob(recordBlob);
-      setCurrentRecord({
-        ...currentRecord,
-        file: window.URL.createObjectURL(recordBlob),
-      });
-      recordingChunks = [];
-    };
-
-    recorder.stop();
-
-    setIsRecording(false);
-    setIsRecordingFinished(true);
-    setTimer(0);
-    clearTimeout(timerTimeout);
-  }
   function resetRecording() {
     const { mediaRecorder, stream, analyser, audioContext } =
       mediaRecorderRef.current;
+
+    // Invalidate any in-flight transcription events
+    transcriptSessionIdRef.current++;
 
     if (mediaRecorder) {
       mediaRecorder.onstop = () => {
@@ -163,6 +248,23 @@ export const AudioRecorderWithVisualizer = ({
       mediaRecorder.stop();
     } else {
       alert("recorder instance is null!");
+    }
+
+    // Close Deepgram live connection if open
+    try {
+      if (deepgramRef.current) {
+        if (typeof deepgramRef.current.finish === "function") {
+          deepgramRef.current.finish();
+        }
+        if (typeof deepgramRef.current.close === "function") {
+          deepgramRef.current.close();
+        }
+      }
+    } catch {
+      // ignore
+    } finally {
+      deepgramRef.current = null;
+      dgOpenRef.current = false;
     }
 
     // Stop the web audio context and the analyser node
@@ -191,34 +293,51 @@ export const AudioRecorderWithVisualizer = ({
         canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
       }
     }
+
+    // Revoke any existing audio object URL and clear current record
+    try {
+      if (typeof currentRecord.file === "string") {
+        URL.revokeObjectURL(currentRecord.file as string);
+      }
+    } catch {
+      // ignore
+    }
+    setCurrentRecord({ id: -1, name: "", file: null });
+
+    // Clear transcript text
+    setFinalText("");
+    setInterimText("");
   }
-  const handleSubmit = () => {
-    stopRecording();
+  const downloadCurrentAudio = () => {
+    try {
+      if (recordingChunks.length > 0) {
+        const recordBlob = new Blob(recordingChunks, { type: "audio/wav" });
+        downloadBlob(recordBlob);
+      } else if (typeof currentRecord.file === "string") {
+        const a = document.createElement("a");
+        a.href = currentRecord.file as string;
+        a.download = `Audio_${Date.now()}.wav`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    } catch {}
   };
 
-  // Upload the recorded blob to Deepgram's /listen endpoint
-  async function uploadToDeepgram(blob: Blob) {
-    const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY;
-    if (!apiKey) {
-      console.warn("NEXT_PUBLIC_DEEPGRAM_API_KEY is not set");
-      return;
+  // Convert Float32 PCM to 16-bit little-endian PCM ArrayBuffer
+  function floatTo16BitPCM(float32Array: Float32Array): ArrayBuffer {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < float32Array.length; i++, offset += 2) {
+      const sample = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(
+        offset,
+        sample < 0 ? sample * 0x8000 : sample * 0x7fff,
+        true
+      );
     }
-    const url =
-      "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true";
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${apiKey}`,
-        "Content-Type": blob.type || "audio/wav",
-      },
-      body: blob,
-    });
-    try {
-      const json = await res.json();
-      console.log("Deepgram response", json);
-    } catch {
-      // Non-JSON responses can occur; ignore
-    }
+    return buffer;
   }
 
   // Effect to update the timer every second
@@ -285,9 +404,6 @@ export const AudioRecorderWithVisualizer = ({
     if (isRecording) {
       visualizeVolume();
     } else {
-      if (canvasCtx) {
-        canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
-      }
       cancelAnimationFrame(animationRef.current || 0);
     }
 
@@ -296,65 +412,131 @@ export const AudioRecorderWithVisualizer = ({
     };
   }, [isRecording]);
 
-  return (
-    <div
-      className={cn(
-        "flex h-16 rounded-md relative w-full items-center justify-center gap-2 max-w-5xl",
-        {
-          "border p-1": isRecording,
-          "border-none p-0": !isRecording,
-        },
-        className
-      )}
-    >
-      {isRecording ? (
-        <Timer
-          hourLeft={hourLeft}
-          hourRight={hourRight}
-          minuteLeft={minuteLeft}
-          minuteRight={minuteRight}
-          secondLeft={secondLeft}
-          secondRight={secondRight}
-          timerClassName={timerClassName}
-        />
-      ) : null}
-      <canvas
-        ref={canvasRef}
-        className={`h-full w-full bg-background ${
-          !isRecording ? "hidden" : "flex"
-        }`}
-      />
-      <div className="flex gap-2">
-        {isRecording ? (
-          <button
-            onClick={resetRecording}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground"
-            aria-label="Reset recording"
-            title="Reset recording"
-          >
-            <Trash size={15} />
-          </button>
-        ) : null}
+  // Auto-follow transcript scroll (horizontal)
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    el.scrollLeft = el.scrollWidth;
+  }, [finalText, interimText]);
 
+  function downloadTranscript() {
+    const text = `${finalText} ${interimText}`.trim();
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `transcript_${Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  return (
+    <div className={cn("w-full relative", className)}>
+      <AnimatePresence>
         {!isRecording ? (
-          <button
-            onClick={() => startRecording()}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground"
-            aria-label="Start recording"
-            title="Start recording"
+          <motion.div
+            className="absolute inset-0 z-10 flex items-center justify-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25 }}
           >
-            <Mic size={15} />
-          </button>
-        ) : (
-          <button
-            onClick={handleSubmit}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground"
-            aria-label="Stop & upload"
-            title="Stop & upload"
+            <motion.button
+              onClick={() => startRecording()}
+              className="inline-flex h-16 w-16 md:h-20 md:w-20 items-center justify-center rounded-full border bg-card text-card-foreground shadow-lg"
+              aria-label="Start recording"
+              title="Start recording"
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+            >
+              <Mic size={22} />
+            </motion.button>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <div className="w-full grid grid-cols-[auto_1fr] items-center gap-2">
+        <div className="flex gap-2">
+          {isRecording ? (
+            <button
+              onClick={resetRecording}
+              className="inline-flex h-12 w-12 items-center justify-center rounded-md border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground"
+              aria-label="Reset recording"
+              title="Reset recording"
+            >
+              <Trash size={16} />
+            </button>
+          ) : null}
+
+          {isRecording ? (
+            <button
+              onClick={downloadCurrentAudio}
+              className="inline-flex h-12 w-12 items-center justify-center rounded-md border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground"
+              aria-label="Download audio"
+              title="Download audio"
+            >
+              <Download size={16} />
+            </button>
+          ) : null}
+        </div>
+
+        <motion.div
+          className={cn(
+            "flex items-center gap-2",
+            !isRecording && "pointer-events-none"
+          )}
+          initial={false}
+          animate={{ opacity: isRecording ? 1 : 0 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+        >
+          {isRecording ? (
+            <Timer
+              hourLeft={hourLeft}
+              hourRight={hourRight}
+              minuteLeft={minuteLeft}
+              minuteRight={minuteRight}
+              secondLeft={secondLeft}
+              secondRight={secondRight}
+              timerClassName={cn("h-12", timerClassName)}
+            />
+          ) : null}
+          <canvas
+            ref={canvasRef}
+            className="h-12 w-full bg-background border rounded-md"
+          />
+        </motion.div>
+      </div>
+
+      <div className="mt-2 flex items-end gap-2">
+        <motion.div
+          ref={transcriptRef as any}
+          className={cn(
+            "rounded-md border bg-background text-lg leading-relaxed text-foreground h-12 w-full overflow-x-auto overflow-y-hidden flex items-center px-3",
+            !isRecording && "pointer-events-none"
+          )}
+          initial={false}
+          animate={{ opacity: isRecording ? 1 : 0 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+        >
+          <span className="whitespace-nowrap">{finalText} </span>
+          <span className="opacity-60 whitespace-nowrap">{interimText}</span>
+        </motion.div>
+        {isRecording ? (
+          <motion.button
+            onClick={downloadTranscript}
+            className="inline-flex h-12 w-12 items-center justify-center rounded-md border bg-card text-card-foreground hover:bg-accent hover:text-accent-foreground"
+            aria-label="Download transcript"
+            title="Download transcript"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.2 }}
           >
-            <Download size={15} />
-          </button>
-        )}
+            <FileDown size={16} />
+          </motion.button>
+        ) : null}
       </div>
     </div>
   );
@@ -381,7 +563,7 @@ const Timer = React.memo(
     return (
       <div
         className={cn(
-          "items-center -top-12 left-0 absolute justify-center gap-0.5 border p-1.5 rounded-md font-mono font-medium text-foreground flex",
+          "items-center justify-center gap-0.5 border p-1.5 rounded-md font-mono font-medium text-foreground flex",
           timerClassName
         )}
       >

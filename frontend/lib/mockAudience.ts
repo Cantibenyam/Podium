@@ -1,4 +1,4 @@
-import { faker } from "@faker-js/faker";
+import { en, faker, Faker } from "@faker-js/faker";
 
 export type Bot = {
   id: string;
@@ -19,17 +19,19 @@ const emojiPalette = [
   "🧑‍💻",
 ];
 
-export function generateBot(): Bot {
+export function generateBot(rand: typeof faker = faker): Bot {
   return {
-    id: faker.string.uuid(),
-    name: faker.person.firstName(),
-    avatar: faker.helpers.arrayElement(emojiPalette),
+    id: rand.string.uuid(),
+    name: rand.person.firstName(),
+    avatar: rand.helpers.arrayElement(emojiPalette),
   };
 }
 
-export function seedBots(min: number, max: number): Bot[] {
-  const count = faker.number.int({ min, max });
-  return Array.from({ length: count }, () => generateBot());
+export function seedBots(min: number, max: number, seed?: number): Bot[] {
+  const rand = seed !== undefined ? new Faker({ locale: [en] }) : faker;
+  if (seed !== undefined) rand.seed(seed);
+  const count = rand.number.int({ min, max });
+  return Array.from({ length: count }, () => generateBot(rand));
 }
 
 export type Reaction = {
@@ -54,8 +56,8 @@ const phrases = [
 export function generateReaction(): Reaction {
   const sign = faker.number.int({ min: -2, max: 2 });
   return {
-    emoji: faker.helpers.arrayElement(reactionEmojis),
     phrase: faker.helpers.arrayElement(phrases),
+    emoji: faker.helpers.arrayElement(reactionEmojis),
     intensity: sign,
   };
 }
