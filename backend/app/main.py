@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+import random
 
 from app.core.config import get_settings
 from app.api.rooms import router as rooms_router
@@ -20,7 +21,7 @@ settings = get_settings()
 app.state.settings = settings
 app.state.ws_manager = ConnectionManager()
 app.state.event_bus = EventBus()
-app.state.transcript_buffer = TranscriptBuffer(max_interval_s=2.0)
+app.state.transcript_buffer = TranscriptBuffer(max_interval_s=1.0)
 app.state.room_manager = RoomManager()
 registry.bind(app)
 
@@ -75,6 +76,8 @@ async def _on_transcript_chunk(payload: dict) -> None:
         reactions = await asyncio.gather(*tasks)
         for i, reaction in enumerate(reactions):
             if reaction:
+                # Stagger reactions to make them feel more natural
+                await asyncio.sleep(0.5 + random.random())
                 await app.state.event_bus.publish(
                     "bot:reaction",
                     {"roomId": room_id, "botId": bots_in_room[i].id, "reaction": reaction},
