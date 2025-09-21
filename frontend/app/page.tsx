@@ -11,12 +11,6 @@ export default function Home() {
           Staging
         </a>
         <a
-          href="/scene"
-          className="rounded-lg border bg-card text-card-foreground px-4 py-3 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors"
-        >
-          Open Scene
-        </a>
-        <a
           href="/report"
           className="rounded-lg border bg-card text-card-foreground px-4 py-3 text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors"
         >

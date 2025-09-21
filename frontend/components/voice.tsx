@@ -44,6 +44,11 @@ export const AudioRecorderWithVisualizer = ({
   roomId,
   apiBase,
 }: Props) => {
+  const dbg = (...args: any[]) => {
+    try {
+      console.log("[voice]", ...args);
+    } catch {}
+  };
   // States
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [, setIsRecordingFinished] = useState<boolean>(false);
@@ -98,19 +103,30 @@ export const AudioRecorderWithVisualizer = ({
     if (postingRef.current) return; // simple back-pressure gate
     postingRef.current = true;
     try {
+      dbg("posting transcript chunk", {
+        roomId,
+        len: text.length,
+        preview: text.slice(0, 64),
+      });
       await fetch(`${apiBase}/webhooks/deepgram`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ roomId, text }),
       });
+      dbg("posted transcript chunk OK");
     } catch {
-      // ignore
+      dbg("post transcript chunk failed");
     } finally {
       postingRef.current = false;
     }
   }
 
   function startRecording() {
+    dbg("startRecording called", {
+      roomId,
+      apiBase,
+      hasDGKey: Boolean(process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY),
+    });
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices
         .getUserMedia({
@@ -121,6 +137,7 @@ export const AudioRecorderWithVisualizer = ({
           // ============ Analyzing ============
           const AudioContext = window.AudioContext;
           const audioCtx = new AudioContext();
+          dbg("audio context created", { sampleRate: audioCtx.sampleRate });
           const analyser = audioCtx.createAnalyser();
           const source = audioCtx.createMediaStreamSource(stream);
           source.connect(analyser);
@@ -131,6 +148,7 @@ export const AudioRecorderWithVisualizer = ({
               | string
               | undefined;
             if (apiKey) {
+              dbg("initializing deepgram live connection");
               const deepgram = createClient(apiKey);
               const dgConn = deepgram.listen.live({
                 model: "nova-3",
@@ -146,9 +164,11 @@ export const AudioRecorderWithVisualizer = ({
               });
               dgConn.on(LiveTranscriptionEvents.Open, () => {
                 dgOpenRef.current = true;
+                dbg("deepgram live open");
               });
               dgConn.on(LiveTranscriptionEvents.Close, () => {
                 dgOpenRef.current = false;
+                dbg("deepgram live close");
               });
               dgConn.on(LiveTranscriptionEvents.Transcript, (payload: any) => {
                 if (thisSessionId !== transcriptSessionIdRef.current) return;
@@ -161,6 +181,10 @@ export const AudioRecorderWithVisualizer = ({
                   if (text.length > 0) {
                     setFinalText((prev) => (prev ? `${prev} ${text}` : text));
                     // Send final chunk to backend webhook (buffered there)
+                    dbg("final transcript", {
+                      len: text.length,
+                      preview: text.slice(0, 80),
+                    });
                     postTranscriptChunk(text);
                   }
                   setInterimText("");
@@ -168,10 +192,10 @@ export const AudioRecorderWithVisualizer = ({
               });
               deepgramRef.current = dgConn;
             } else {
-              console.warn("NEXT_PUBLIC_DEEPGRAM_API_KEY is not set");
+              dbg("NEXT_PUBLIC_DEEPGRAM_API_KEY is not set");
             }
           } catch (err) {
-            console.warn("Deepgram SDK init failed", err);
+            dbg("Deepgram SDK init failed", err);
           }
           mediaRecorderRef.current = {
             stream,
@@ -206,6 +230,7 @@ export const AudioRecorderWithVisualizer = ({
             audioCtx.audioWorklet
               .addModule("/worklets/pcm-processor.js")
               .then(() => {
+                dbg("audio worklet module loaded");
                 const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
                 source.connect(worklet);
                 const volumeSink = audioCtx.createGain();
@@ -222,19 +247,22 @@ export const AudioRecorderWithVisualizer = ({
                 };
               })
               .catch((err) => {
-                console.warn("AudioWorklet failed to load", err);
+                dbg("AudioWorklet failed to load", err);
               });
           } catch (err) {
-            console.warn("AudioWorklet unavailable; falling back", err);
+            dbg("AudioWorklet unavailable; falling back", err);
           }
         })
         .catch((error) => {
-          alert(error);
-          console.log(error);
+          try {
+            alert(error);
+          } catch {}
+          dbg("getUserMedia error", error);
         });
     }
   }
   function resetRecording() {
+    dbg("resetRecording called");
     const { mediaRecorder, stream, analyser, audioContext } =
       mediaRecorderRef.current;
 
@@ -254,9 +282,11 @@ export const AudioRecorderWithVisualizer = ({
     try {
       if (deepgramRef.current) {
         if (typeof deepgramRef.current.finish === "function") {
+          dbg("deepgram.finish()");
           deepgramRef.current.finish();
         }
         if (typeof deepgramRef.current.close === "function") {
+          dbg("deepgram.close()");
           deepgramRef.current.close();
         }
       }
@@ -418,6 +448,12 @@ export const AudioRecorderWithVisualizer = ({
     if (!el) return;
     el.scrollLeft = el.scrollWidth;
   }, [finalText, interimText]);
+
+  // Log initial props
+  useEffect(() => {
+    dbg("component mounted", { roomId, apiBase });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function downloadTranscript() {
     const text = `${finalText} ${interimText}`.trim();
