@@ -71,6 +71,7 @@ OPENROUTER_API_KEY=
 - `POST /webhooks/deepgram` body=`{ roomId, text }` → buffers transcript and publishes chunk(s)
 
 Testing helpers:
+
 - `POST /rooms/{roomId}/broadcast` body=`{ event, payload }` → direct WS broadcast (debug)
 - `POST /events/bot-reaction` body=`{ roomId, botId, reaction }` → publish via EventBus
 
@@ -99,6 +100,7 @@ Bridges in `main.py` forward these to WS so the frontend stays in sync.
 Holds per‑room bots and transcript history (rolling window). Used by HTTP routes and by bot logic.
 
 Key methods:
+
 - `add_bot_to_room(room_id, bot)`
 - `remove_bot_from_room(room_id, bot_id)`
 - `get_transcript_window(room_id, seconds)` → `str`
@@ -147,7 +149,7 @@ echo $ROOM_ID
 Browser console (go to http://127.0.0.1:8000/docs):
 
 ```js
-const ROOM_ID = "<paste-id>";
+const ROOM_ID = "aff930ab-31d0-4d3d-b7e5-e69cd2d12c3a";
 const ws = new WebSocket(`ws://127.0.0.1:8000/ws/rooms/${ROOM_ID}`);
 ws.onmessage = (e) => console.log("msg:", e.data);
 ```
@@ -177,4 +179,3 @@ Fetch state:
 ```bash
 curl -s http://127.0.0.1:8000/rooms/$ROOM_ID/state | jq
 ```
-
