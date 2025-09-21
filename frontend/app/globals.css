@@ -155,4 +155,30 @@
   .animate-float-up {
     animation: float-up-fade 1500ms ease-in-out forwards;
   }
+
+  /* Custom WebKit scrollbar styles */
+  ::-webkit-scrollbar {
+    width: 2px; /* Adjust for scrollbar width */
+    height: 2px; /* Adjust for scrollbar height (for horizontal scrollbars) */
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent; /* Make track transparent */
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.5 0 0 / 0.3); /* Subtle gray, semi-transparent */
+    border-radius: 5px; /* Rounded corners for the thumb */
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.5 0 0 / 0.5); /* Slightly more opaque on hover */
+  }
+
+  /* For Firefox - a more basic approach as WebKit pseudo-elements don't apply */
+  /* This will make it thin and use accent colors, but less customizable than WebKit */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) var(--background);
+  }
 }
