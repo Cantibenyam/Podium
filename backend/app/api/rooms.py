@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.schemas.room import (
     CreateRoomRequest,
@@ -23,15 +23,10 @@ async def create_room(_: CreateRoomRequest | None = None) -> CreateRoomResponse:
 
 
 @router.get("/{roomId}/state", response_model=RoomState)
-async def get_room_state(roomId: str) -> RoomState:
-    # MVP: return empty room state; real state will come from RoomManager later
+async def get_room_state(roomId: str, request: Request) -> RoomState:
     if not roomId:
         raise HTTPException(status_code=404, detail="Room not found")
-    return RoomState(
-        roomId=roomId,
-        bots=[],
-        transcript="",
-        updatedAt=datetime.now(timezone.utc),
-    )
+    state = request.app.state.room_manager.get_room_state(roomId)  # type: ignore[attr-defined]
+    return RoomState(**state)
 
 
