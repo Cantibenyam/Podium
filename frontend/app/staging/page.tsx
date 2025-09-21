@@ -15,12 +15,17 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import { deriveSeedFromConfig, getMockCategories } from "../../lib/mockScene";
+import { getMockCategories } from "../../lib/mockScene";
 
 export default function QuestionnairePage() {
   const router = useRouter();
   const categories = useMemo(() => getMockCategories(10, 123), []);
   const [showForm, setShowForm] = useState<boolean>(false);
+  const [busy, setBusy] = useState(false);
+  const apiBase = useMemo(
+    () => process.env.NEXT_PUBLIC_BACKEND_URL as string,
+    []
+  );
 
   const form = useForm<{ category: string; lengthSec: number }>({
     defaultValues: {
@@ -29,14 +34,21 @@ export default function QuestionnairePage() {
     },
   });
 
-  function onSubmit(values: { category: string; lengthSec: number }) {
-    const seed = deriveSeedFromConfig(values.category, values.lengthSec);
-    const params = new URLSearchParams({
-      seed: String(seed),
-      category: values.category,
-      length: String(values.lengthSec),
-    });
-    router.push(`/scene?${params.toString()}`);
+  async function onSubmit() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new Error(`create room failed ${res.status}`);
+      const { id: roomId } = await res.json();
+      router.push(`/scene?roomId=${roomId}`);
+    } catch {
+      setBusy(false);
+    }
   }
 
   return (
@@ -166,9 +178,10 @@ export default function QuestionnairePage() {
                       </button>
                       <button
                         type="submit"
-                        className="inline-flex h-10 items-center justify-center rounded-md border bg-primary text-primary-foreground px-4 text-sm font-medium hover:opacity-90"
+                        className="inline-flex h-10 items-center justify-center rounded-md border bg-primary text-primary-foreground px-4 text-sm font-medium hover:opacity-90 disabled:opacity-60"
+                        disabled={busy}
                       >
-                        Start scene
+                        {busy ? "Connecting…" : "Start scene"}
                       </button>
                     </div>
                   </form>
