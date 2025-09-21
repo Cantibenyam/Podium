@@ -1,78 +1,180 @@
 # Backend: AI Audience Orchestrator
 
-This backend is a Python [FastAPI](https://fastapi.tiangolo.com/) application responsible for managing the AI audience, processing transcription data, and communicating with the frontend via WebSockets.
+This backend is a Python [FastAPI](https://fastapi.tiangolo.com/) application that manages real‑time AI audience behavior. It receives transcript data (Deepgram webhook), maintains per‑room state, and pushes events to the frontend over WebSockets.
 
 ## Architecture & Data Flow
 
-The application is designed to be real-time and event-driven. The core data flow is as follows:
+Real‑time, event‑driven pipeline:
 
-1.  **Audio Processing (Client-side):** The frontend client captures the user's audio and streams it directly to [Deepgram](https://deepgram.com/).
-2.  **Transcription Webhook:** Deepgram performs real-time transcription and sends the transcript data to a webhook endpoint on this backend server.
-3.  **AI Orchestration:** The backend receives the transcript. An **Orchestrator** module manages the state of the "room" and the AI "bots".
-    -   A **Spawner** component decides when bots should join or leave based on engagement metrics (e.g., topic relevance, speaker's pace).
-    -   Each **Bot** is an independent AI agent with its own persona and a short-term memory (a 60-second sliding window of the transcript).
-4.  **LLM Interaction:** Each bot makes calls to an LLM (via [OpenRouter](https://openrouter.ai/)) to generate reactions (emojis and short phrases) based on its persona and the incoming transcript.
-5.  **Real-time Feedback:** The generated reactions are broadcast back to the frontend client over a WebSocket connection.
+1. **Frontend audio → Deepgram:** The browser streams mic audio directly to Deepgram.
+2. **Webhook → Transcript buffer:** Deepgram sends transcripts to `POST /webhooks/deepgram`. We buffer text and emit chunks every ~2s or when a sentence ends.
+3. **Event bus:** The buffer publishes `transcript:chunk` to an in‑process EventBus.
+4. **Room state:** `RoomManager` appends transcript to per‑room history; bots will read 60‑second windows for prompting.
+5. **WebSocket gateway:** Subscribed bus bridges broadcast events to connected clients: transcript, join, leave, reaction.
 
-## API Contract
+No Redis is used in the MVP; all state is in memory and single‑process.
 
-### HTTP Endpoints
+## Project Layout
 
-#### `POST /webhooks/deepgram`
-
--   **Description:** This endpoint receives transcription results from Deepgram.
--   **Body:** The shape of the body will be determined by the Deepgram API. It typically includes transcription text, timestamps, and other metadata.
-
-### WebSocket Communication
-
--   **Endpoint:** `WS /rooms/{roomId}`
--   **Description:** The primary communication channel for sending real-time events from the server to the client.
-
-#### Server-to-Client Messages
-
-The server will send JSON-formatted messages to the client. Each message will have an `event` type and a `payload`.
-
--   **`event: 'join'`**
-    -   **Description:** Sent when a new bot joins the room.
-    -   **Payload:** `{ "bot": Bot }`
-
--   **`event: 'leave'`**
-    -   **Description:** Sent when a bot leaves the room.
-    -   **Payload:** `{ "botId": "string" }`
-
--   **`event: 'reaction'`**
-    -   **Description:** Sent when a bot has a reaction to the speech.
-    -   **Payload:** `{ "botId": "string", "reaction": { "emoji": "string", "phrase": "string" } }`
-
-### Data Models
-
-```json
-// The main Bot object, used in the 'join' event
-{
-  "id": "string",
-  "name": "string",
-  "avatar": "string (e.g., '🤖')",
-  "persona": {
-    "stance": "'supportive' | 'skeptical' | 'curious'",
-    "domain": "'tech' | 'design' | 'finance'"
-  }
-}
+```
+backend/
+  app/
+    api/                # HTTP routes
+      rooms.py          # create room, state, bots endpoints, transcript window
+      webhooks.py       # Deepgram webhook (POST /webhooks/deepgram)
+      events.py         # Test publisher for bot:reaction
+      broadcast.py      # Test HTTP→WS broadcast (optional)
+    core/
+      config.py         # settings loader (.env)
+      registry.py       # access singletons (RoomManager, EventBus) from anywhere
+    events/
+      bus.py            # in‑process async pub/sub bus
+    services/
+      transcript_buffer.py  # buffer transcript and emit chunks
+    state/
+      room_manager.py   # in‑memory room state (bots, transcript)
+    ws/
+      manager.py        # WebSocket connection management per room
+      routes.py         # WS endpoint: /ws/rooms/{roomId}
+    main.py             # app wiring, middleware, router includes, bus bridges
 ```
 
-## Setup
+## Run locally
 
-1.  **Install Dependencies:**
-    ```bash
-    # requirements.txt will be created in a future step
-    # pip install -r requirements.txt
-    ```
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --reload --port 8000
+```
 
-2.  **Environment Variables:**
-    Create a `.env` file in this directory by copying the example file:
-    ```bash
-    cp .env.example .env
-    ```
-    Then, fill in the required API keys in the new `.env` file.
+Health check: `GET /health`
 
-    -   `DEEPGRAM_API_KEY`: Your API key for the Deepgram service.
-    -   `OPENROUTER_API_KEY`: Your API key for the OpenRouter service.
+## Configuration
+
+Create and fill `.env` (see `.env.example`):
+
+```
+APP_ENV=development
+LOG_LEVEL=debug
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+DEEPGRAM_API_KEY=
+OPENROUTER_API_KEY=
+```
+
+## HTTP API (MVP)
+
+- `POST /rooms` → `{ id, createdAt }`
+- `GET /rooms/{roomId}/state` → `{ roomId, bots, transcript, updatedAt }`
+- `GET /rooms/{roomId}/transcript?windowSeconds=60` → `{ roomId, windowSeconds, text }`
+- `POST /rooms/{roomId}/bots` body=Bot → add bot, emits join
+- `DELETE /rooms/{roomId}/bots/{botId}` → remove bot, emits leave
+- `POST /webhooks/deepgram` body=`{ roomId, text }` → buffers transcript and publishes chunk(s)
+
+Testing helpers:
+- `POST /rooms/{roomId}/broadcast` body=`{ event, payload }` → direct WS broadcast (debug)
+- `POST /events/bot-reaction` body=`{ roomId, botId, reaction }` → publish via EventBus
+
+## WebSocket
+
+- Endpoint: `WS /ws/rooms/{roomId}`
+- Envelope: `{ "event": string, "payload": object }`
+- Events sent by server:
+  - `ready`: `{ roomId }` (on connect)
+  - `transcript`: `{ roomId, text }` (buffer flush)
+  - `join`: `{ bot }`
+  - `leave`: `{ botId }`
+  - `reaction`: `{ roomId, botId, reaction }`
+
+## Event Bus Topics (in‑process)
+
+- `transcript:chunk` → `{ roomId, text }`
+- `bot:join` → `{ roomId, bot }`
+- `bot:leave` → `{ roomId, botId }`
+- `bot:reaction` → `{ roomId, botId, reaction }`
+
+Bridges in `main.py` forward these to WS so the frontend stays in sync.
+
+## RoomManager (single process, in memory)
+
+Holds per‑room bots and transcript history (rolling window). Used by HTTP routes and by bot logic.
+
+Key methods:
+- `add_bot_to_room(room_id, bot)`
+- `remove_bot_from_room(room_id, bot_id)`
+- `get_transcript_window(room_id, seconds)` → `str`
+- `get_room_state(room_id)` → `{ roomId, bots, transcript, updatedAt }`
+
+## Internal usage (for bot/spawner/coach modules)
+
+Use the registry to access singletons without HTTP:
+
+```python
+from app.core.registry import get_room_manager, get_event_bus
+from app.schemas.room import Bot, Persona
+
+room_id = "<room-uuid>"
+
+# Add a bot
+rm = get_room_manager()
+bot = Bot(id="b1", name="Alex", avatar="🤖", persona=Persona(stance="curious", domain="tech"))
+rm.add_bot_to_room(room_id, bot)
+
+# Publish a reaction (will be broadcast to the room)
+import asyncio
+async def send_reaction():
+    bus = get_event_bus()
+    await bus.publish("bot:reaction", {
+        "roomId": room_id,
+        "botId": "b1",
+        "reaction": {"emoji": "🔥", "phrase": "Nice point!", "intensity": 0.9}
+    })
+asyncio.run(send_reaction())
+
+# Read a 60s transcript window
+text = rm.get_transcript_window(room_id, 60)
+print(text)
+```
+
+## Manual testing recipes
+
+Create a room and open WS:
+
+```bash
+ROOM_ID=$(curl -s -X POST http://127.0.0.1:8000/rooms | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+echo $ROOM_ID
+```
+
+Browser console (go to http://127.0.0.1:8000/docs):
+
+```js
+const ROOM_ID = "<paste-id>";
+const ws = new WebSocket(`ws://127.0.0.1:8000/ws/rooms/${ROOM_ID}`);
+ws.onmessage = (e) => console.log("msg:", e.data);
+```
+
+Simulate Deepgram:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/webhooks/deepgram -H "content-type: application/json" -d '{"roomId":"'"$ROOM_ID"'","text":"Hello there"}'
+curl -s -X POST http://127.0.0.1:8000/webhooks/deepgram -H "content-type: application/json" -d '{"roomId":"'"$ROOM_ID"'","text":" finishing the sentence."}'
+```
+
+Add/remove a bot:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/rooms/$ROOM_ID/bots -H "content-type: application/json" -d '{"id":"b1","name":"Alex","avatar":"🤖","persona":{"stance":"curious","domain":"tech"}}'
+curl -s -X DELETE http://127.0.0.1:8000/rooms/$ROOM_ID/bots/b1 -i | head -n 1
+```
+
+Publish a reaction via bus (HTTP helper):
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/events/bot-reaction -H "content-type: application/json" -d '{"roomId":"'"$ROOM_ID"'","botId":"b1","reaction":{"emoji":"🔥","phrase":"Let’s go!","intensity":0.8}}'
+```
+
+Fetch state:
+
+```bash
+curl -s http://127.0.0.1:8000/rooms/$ROOM_ID/state | jq
+```
+
