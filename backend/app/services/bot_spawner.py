@@ -17,7 +17,7 @@ async def _call_openai_api(messages: List[ChatCompletionMessageParam], timeout: 
             model="gpt-5-nano-2025-08-07",
             messages=messages,
             response_format={"type": "json_object"},
-            temperature=0.8,
+            temperature=1,
             timeout=timeout
         )
         return response.choices[0].message.content
@@ -26,50 +26,49 @@ async def _call_openai_api(messages: List[ChatCompletionMessageParam], timeout: 
         print(f"Failed to extract content from API response: {e}")
         return None
 
-async def generatePersonaPool(topic: str = "Public Speaking", count: int = 10) -> List[Dict]:
+async def generatePersonaPool(topic: str = "Public Speaking") -> Dict:
     prompt = f"""
-    Generate a list of exactly {count} diverse audience personas for a presentation on "{topic}".
-    Your response MUST be a single, valid JSON array containing exactly {count} JSON objects.
-    Do not write any text before or after the JSON array.
-    Each object must have the following keys and adhere EXACTLY to the specified data types and allowed values:
+    Generate a single persona object for a presentation on "{topic}".
+    Your response MUST be a single, valid JSON object containing exactly the following keys:
     - "name": string
     - "stance": string (must be one of "supportive", "skeptical", or "curious")
     - "domain": string (must be one of "tech", "design", or "finance")
     - "snark": float (a JSON number between 0.0 and 1.0)
     - "politeness": float (a JSON number between 0.0 and 1.0)
+    Do not include any additional text before or after the JSON object.
     """
-    messages: List[ChatCompletionMessageParam] = [{"role": "user", "content": prompt}]
-    
-    content_string = await _call_openai_api(messages)
-    
-    if content_string:
-        try:
-            data = json.loads(content_string)
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                for value in data.values():
-                    if isinstance(value, list):
-                        return value
-            print(f"⚠️ Failed to find a list of personas in the API's JSON response.")
 
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse persona pool JSON: {e}")
-
-    print("⚠️ Using fallback persona pool.")
-    return [
-        {"name": "Engaged Student", "stance": "supportive", "domain": "tech", "snark": 0.1, "politeness": 0.8},
-        {"name": "Critical Thinker", "stance": "skeptical", "domain": "finance", "snark": 0.3, "politeness": 0.6},
-        {"name": "Curious Designer", "stance": "curious", "domain": "design", "snark": 0.1, "politeness": 0.9}
+    messages: List[ChatCompletionMessageParam] = [
+        {"role": "user", "content": prompt}
     ]
 
-def createBotFromPool(persona_pool: list) -> Optional[Bot]:
+    contentString = await _call_openai_api(messages)
+
+    if contentString:
+        try:
+            persona = json.loads(contentString)
+            if isinstance(persona, dict):
+                return persona
+            print("⚠️ The API response is not a valid JSON object.")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse persona JSON: {e}")
+
+    # Fallback if the API response is not valid
+    print("⚠️ Using fallback persona data.")
+    return {
+        "name": "Engaged Student",
+        "stance": "supportive",
+        "domain": "tech",
+        "snark": 0.1,
+        "politeness": 0.8
+    }
+
+
+def createBotFromPool(persona_pool: dict) -> Optional[Bot]:
     if not persona_pool:
         return None
     try:
-        random_persona_dict = random.choice(persona_pool)
-
-        persona = BotPersona(**random_persona_dict)
+        persona = BotPersona(**persona_pool)
         state = BotState()
         return Bot(personality=persona, state=state)
     except Exception as e:

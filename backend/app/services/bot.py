@@ -49,10 +49,10 @@ class Bot(BaseModel):
 
         try:
             response = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5-nano-2025-08-07",
                 messages=messages,
                 response_format={"type": "json_object"},
-                temperature=0.7
+                temperature=1.0
             )
             
             content_string = response.choices[0].message.content
