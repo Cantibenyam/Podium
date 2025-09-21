@@ -14,7 +14,7 @@ async def _call_openai_api(messages: List[ChatCompletionMessageParam], timeout: 
     client = AsyncOpenAI()
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-nano-2025-08-07",
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.8,

@@ -21,7 +21,7 @@ class MegaKnight(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     persona: CoachPersona
     state: CoachState
-
+    
     async def _call_openai_api(self, messages: List[ChatCompletionMessageParam], timeout: int = 45) -> Optional[Dict]:
         if not os.getenv('OPENAI_API_KEY'):
             print(f"❌ ERROR: OPENAI_API_KEY not set for coach {self.id}")
