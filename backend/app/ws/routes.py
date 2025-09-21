@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Request
 
 from app.ws.manager import ConnectionManager
+from app.events.bus import EventBus
 
 
 router = APIRouter()
@@ -13,11 +14,16 @@ def get_manager(websocket: WebSocket) -> ConnectionManager:
     return websocket.app.state.ws_manager  # type: ignore[attr-defined]
 
 
+def get_bus(websocket: WebSocket) -> EventBus:
+    return websocket.app.state.event_bus  # type: ignore[attr-defined]
+
+
 @router.websocket("/ws/rooms/{roomId}")
 async def websocket_room_endpoint(
     websocket: WebSocket,
     roomId: str,
     manager: ConnectionManager = Depends(get_manager),
+    bus: EventBus = Depends(get_bus),
 ) -> None:
     await manager.connect(roomId, websocket)
     try:
