@@ -1,26 +1,23 @@
 from __future__ import annotations
-
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Deque, Tuple
+from typing import Dict, Deque, Tuple, Optional
 
-from app.schemas.room import Bot
-
+from app.services.bot import Bot as ServiceBot
+from app.services.coach import MegaKnight
+from app.schemas.room import Bot as SchemaBot, Persona as SchemaPersona
 
 @dataclass
 class Room:
     id: str
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    bots: Dict[str, Bot] = field(default_factory=dict)
-    # store (timestamp, text)
+    bots: Dict[str, ServiceBot] = field(default_factory=dict)
+    coach: Optional[MegaKnight] = None
     transcript: Deque[Tuple[datetime, str]] = field(default_factory=lambda: deque(maxlen=1000))
 
-
 class RoomManager:
-    """In-memory state for active rooms (single user/process)."""
-
     def __init__(self) -> None:
         self._rooms: Dict[str, Room] = {}
 
@@ -31,7 +28,15 @@ class RoomManager:
             self._rooms[room_id] = room
         return room
 
-    def add_bot_to_room(self, room_id: str, bot: Bot) -> None:
+    def add_coach_to_room(self, room_id: str, coach: MegaKnight):
+        room = self.ensure_room(room_id)
+        room.coach = coach
+
+    def get_coach_in_room(self, room_id: str) -> Optional[MegaKnight]:
+        room = self.ensure_room(room_id)
+        return room.coach
+
+    def add_bot_to_room(self, room_id: str, bot: ServiceBot) -> None:
         room = self.ensure_room(room_id)
         room.bots[bot.id] = bot
         room.updated_at = datetime.now(timezone.utc)
@@ -57,13 +62,27 @@ class RoomManager:
                 chunks.append(txt)
         return " ".join(chunks).strip()
 
+    def get_service_bots_in_room(self, room_id: str) -> list[ServiceBot]:
+        room = self.ensure_room(room_id)
+        return list(room.bots.values())
+
     def get_room_state(self, room_id: str) -> dict:
         room = self.ensure_room(room_id)
+        api_bots = [
+            SchemaBot(
+                id=bot.id,
+                name=bot.personality.name,
+                avatar="🤖",
+                persona=SchemaPersona(
+                    stance=bot.personality.stance,
+                    domain=bot.personality.domain,
+                )
+            ) for bot in room.bots.values()
+        ]
+        
         return {
             "roomId": room.id,
-            "bots": list(room.bots.values()),
+            "bots": api_bots,
             "transcript": self.get_transcript_window(room_id, seconds=60),
             "updatedAt": room.updated_at,
         }
-
-
