@@ -11,6 +11,7 @@ from app.events.bus import EventBus
 from app.api.webhooks import router as webhooks_router
 from app.services.transcript_buffer import TranscriptBuffer
 from app.state.room_manager import RoomManager
+from app.core import registry
 
 app = FastAPI(title="Podium Backend", version="0.1.0")
 
@@ -21,6 +22,7 @@ app.state.ws_manager = ConnectionManager()
 app.state.event_bus = EventBus()
 app.state.transcript_buffer = TranscriptBuffer(max_interval_s=2.0)
 app.state.room_manager = RoomManager()
+registry.bind(app)
 
 if settings.cors_origins:
     app.add_middleware(
