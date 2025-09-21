@@ -72,7 +72,7 @@ class RoomManager:
             SchemaBot(
                 id=bot.id,
                 name=bot.personality.name,
-                avatar="🤖",
+                avatar="CockWrench🥵 💦",
                 persona=SchemaPersona(
                     stance=bot.personality.stance,
                     domain=bot.personality.domain,
