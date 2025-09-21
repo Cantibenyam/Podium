@@ -22,6 +22,9 @@ async def create_room(request: Request, _: CreateRoomRequest | None = None) -> C
     
     coach = create_megaknight_coach()
     request.app.state.room_manager.add_coach_to_room(room_id, coach)
+    
+    for i in range(10):
+        await add_bot(room_id, request, bus = request.app.state.event_bus) 
 
     return CreateRoomResponse(id=room_id, createdAt=datetime.now(timezone.utc))
 
@@ -41,7 +44,7 @@ async def add_bot(
     request: Request,
     bus: EventBus = Depends(get_bus),
 ) -> SchemaBot:
-    persona_pool = await generatePersonaPool(topic="AI Presentations", count=10)
+    persona_pool = await generatePersonaPool(topic="AI Presentations", count=1)
     new_bot_instance = createBotFromPool(persona_pool)
 
     if not new_bot_instance:

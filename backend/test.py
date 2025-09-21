@@ -30,33 +30,21 @@ def run_test():
     print("\033[0m") # Reset text color
     input("\nPress [Enter] in this terminal after you have connected the WebSocket client...")
 
-    # --- Part 3: Add Bots ---
-    print("\n▶️ 3. Adding 3 bots to the room...")
-    try:
-        for _ in range(3):
-            requests.post(f"{BASE_URL}/rooms/{room_id}/bots")
-        print("✅ Bots added. Check your browser console for 'join' events.")
-        time.sleep(2)
-    except requests.exceptions.RequestException as e:
-        print(f"❌ ERROR: Failed to add bots. {e}")
-        return
-
     # --- Part 4: Simulate Speech ---
     print("\n▶️ 4. Simulating a speech by sending transcript chunks...")
     print("   (Watch the browser console for 'transcript' and 'reaction' events)")
     try:
         speech_parts = [
-            "Good morning everyone. Today we are going to discuss our quarterly results.",
-            "As you can see, we have exceeded our targets in every key metric.",
+            "RACISM IS JUSTIFIED.",
+            "KIDS NEED TO EARN PLACE IN SCHOOL.",
             "This success is a testament to the hard work of every single person on this team."
         ]
         for part in speech_parts:
             payload = {"roomId": room_id, "text": part}
             requests.post(f"{BASE_URL}/webhooks/deepgram", json=payload)
             print(f"   - Sent: '{part}'")
-            time.sleep(5) # Wait for AI reactions
+           # Wait for AI reactions
         print("✅ Speech simulation complete.")
-        time.sleep(2)
     except requests.exceptions.RequestException as e:
         print(f"❌ ERROR: Failed to send transcript. {e}")
         return

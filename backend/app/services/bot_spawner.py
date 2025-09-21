@@ -68,6 +68,7 @@ def createBotFromPool(persona_pool: list) -> Optional[Bot]:
         return None
     try:
         random_persona_dict = random.choice(persona_pool)
+
         persona = BotPersona(**random_persona_dict)
         state = BotState()
         return Bot(personality=persona, state=state)
