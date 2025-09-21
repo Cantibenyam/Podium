@@ -120,3 +120,39 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  @keyframes pop-bounce {
+    0% {
+      transform: translateY(0) scale(1);
+    }
+    40% {
+      transform: translateY(-12px) scale(1.08);
+    }
+    70% {
+      transform: translateY(0) scale(1.02);
+    }
+    100% {
+      transform: translateY(0) scale(1);
+    }
+  }
+  @keyframes float-up-fade {
+    0% {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    15% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(-32px);
+    }
+  }
+  .animate-pop-bounce {
+    animation: pop-bounce 420ms ease-out;
+  }
+  .animate-float-up {
+    animation: float-up-fade 1500ms ease-in-out forwards;
+  }
+}
