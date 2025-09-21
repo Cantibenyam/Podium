@@ -35,8 +35,8 @@ Build a demo-ready frontend that simulates an “AI audience” reacting in real
 
 Create app-local environment variables (e.g., `.env.local`). Do not commit secrets. Include an example file (e.g., `.env.example`) for easy onboarding.
 
-- `DEEPGRAM_API_KEY` — placeholder only (unused in MVP)
-- `OPENROUTER_API_KEY` — placeholder only (unused in MVP)
+- `NEXT_PUBLIC_DEEPGRAM_API_KEY` — placeholder only (unused in MVP)
+- `NEXT_PUBLIC_OPENROUTER_API_KEY` — placeholder only (unused in MVP)
 - `NEXT_PUBLIC_WS_URL` — placeholder URL to show where the future WebSocket would connect (e.g., `ws://localhost:8000/ws`)
 
 ---
