@@ -104,7 +104,6 @@ Key methods:
 - `add_bot_to_room(room_id, bot)`
 - `remove_bot_from_room(room_id, bot_id)`
 - `get_transcript_window(room_id, seconds)` → `str`
-- `get_room_state(room_id)` → `{ roomId, bots, transcript, updatedAt }`
 
 ## Internal usage (for bot/spawner/coach modules)
 

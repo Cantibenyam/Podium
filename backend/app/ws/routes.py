@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Request
+import json
 
 from app.ws.manager import ConnectionManager
 from app.events.bus import EventBus
@@ -29,10 +30,23 @@ async def websocket_room_endpoint(
     try:
         # Optional: greet the client
         await websocket.send_json({"event": "ready", "payload": {"roomId": roomId}})
-        # Echo loop for now; later we may handle client->server messages
+        # Client->server messages: handle client_transcript (room-aware)
         while True:
-            _ = await websocket.receive_text()
-            # No-op; server is primarily broadcasting to client in MVP
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            event = data.get("event")
+            payload = data.get("payload") or {}
+            if event == "client_transcript":
+                text = payload.get("text")
+                if isinstance(text, str) and text.strip():
+                    flushed, chunk = websocket.app.state.transcript_buffer.append(roomId, text.strip())  # type: ignore[attr-defined]
+                    if flushed and chunk:
+                        await websocket.app.state.event_bus.publish(  # type: ignore[attr-defined]
+                            "transcript:chunk", {"roomId": roomId, "text": chunk}
+                        )
     except WebSocketDisconnect:
         manager.disconnect(roomId, websocket)
 

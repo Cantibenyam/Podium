@@ -25,6 +25,7 @@ class CreateRoomRequest(BaseModel):
 class CreateRoomResponse(BaseModel):
     id: str
     createdAt: datetime
+    bots: list[Bot] = []
 
 
 class RoomState(BaseModel):

@@ -18,6 +18,9 @@ class BotState(BaseModel):
     present: bool = True
     memory: List[str] = Field(default_factory=list)
     engagementHistory: List[Tuple[float, float]] = Field(default_factory=list)
+    lastReactionTs: float = 0.0
+    cooldownSeconds: float = 3.0
+    reactionProbability: float = 0.6  # 60% chance to react per flushed chunk
 
 def create_system_prompt(bot):
     return f"""You are an audience member with stance: {bot.personality.stance}, domain: {bot.personality.domain}.
@@ -29,17 +32,25 @@ React to the speech with a JSON object containing:
 
 Example: {{"emoji_unicode": "U+1F610", "micro_phrase": "Interesting point", "score_delta": 1}}"""
 
+# Reuse one async OpenAI client per process to reduce connection/setup overhead
+_shared_client: AsyncOpenAI | None = None
+
+
+def get_client() -> AsyncOpenAI:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = AsyncOpenAI()
+    return _shared_client
+
+
 class Bot(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     personality: BotPersona
     state: BotState
 
     async def generateReaction(self, transcript_chunk: str):
-        if not os.getenv('OPENAI_API_KEY'):
-            print(f"❌ ERROR: OPENAI_API_KEY not set for bot {self.id}")
-            return None
 
-        client = AsyncOpenAI()
+        client = get_client()
         system_prompt = create_system_prompt(self)
         
         messages: List[ChatCompletionMessageParam] = [
@@ -52,7 +63,7 @@ class Bot(BaseModel):
                 model="gpt-5-nano-2025-08-07",
                 messages=messages,
                 response_format={"type": "json_object"},
-                temperature=1.0
+                temperature=1,
             )
             
             content_string = response.choices[0].message.content
@@ -62,5 +73,5 @@ class Bot(BaseModel):
             return json.loads(content_string)
 
         except (APIError, KeyError, IndexError, json.JSONDecodeError) as e:
-            print(f"Failed to parse or extract content for bot {self.id}: {e}")
+            print(f"[bot] Failed to get reaction for bot={self.id}: {e}")
             return None

@@ -1,12 +1,12 @@
 from __future__ import annotations
 from datetime import datetime, timezone
+import asyncio
 import uuid
 from fastapi import APIRouter, HTTPException, Request, Depends
 
 from app.schemas.room import (
     CreateRoomRequest,
     CreateRoomResponse,
-    RoomState,
     Bot as SchemaBot,
     Persona as SchemaPersona,
 )
@@ -19,21 +19,50 @@ router = APIRouter(prefix="/rooms", tags=["rooms"])
 @router.post("", response_model=CreateRoomResponse, status_code=201)
 async def create_room(request: Request, _: CreateRoomRequest | None = None) -> CreateRoomResponse:
     room_id = str(uuid.uuid4())
-    
     coach = create_megaknight_coach()
     request.app.state.room_manager.add_coach_to_room(room_id, coach)
+    bots_api: list[SchemaBot] = []
 
-    for i in range(10):
-        await add_bot(room_id, request, bus = request.app.state.event_bus) 
+    # Create bots concurrently; reuse persona generation here rather than inside add_bot
+    num_bots = 1
+    try:
+        persona_tasks = [generatePersonaPool(topic="AI Presentations") for _ in range(num_bots)]
+        personas = await asyncio.gather(*persona_tasks, return_exceptions=True)
+        for p in personas:
+            if isinstance(p, Exception) or not isinstance(p, dict):
+                continue
+            new_bot_instance = createBotFromPool(p)
+            if not new_bot_instance:
+                continue
+            request.app.state.room_manager.add_bot_to_room(room_id, new_bot_instance)
+            # Build API bot representation
+            bot_for_api = SchemaBot(
+                id=new_bot_instance.id,
+                name=new_bot_instance.personality.name,
+                avatar="🤖",
+                persona=SchemaPersona(
+                    stance=new_bot_instance.personality.stance,
+                    domain=new_bot_instance.personality.domain,
+                ),
+            )
+            bots_api.append(bot_for_api)
+            # Log and notify via event bus
+            print(f"[rooms] bot joined room={room_id} id={bot_for_api.id} name={bot_for_api.name}")
+            await request.app.state.event_bus.publish("bot:join", {  # type: ignore[attr-defined]
+                "roomId": room_id,
+                "bot": bot_for_api.model_dump(),
+            })
+    except Exception as e:
+        print(f"[rooms] bot creation error for room={room_id}: {e}")
 
-    return CreateRoomResponse(id=room_id, createdAt=datetime.now(timezone.utc))
+    return CreateRoomResponse(
+        id=room_id,
+        createdAt=datetime.now(timezone.utc),
+        bots=bots_api,
+        updatedAt=datetime.now(timezone.utc),
+    )
 
-@router.get("/{roomId}/state", response_model=RoomState)
-async def get_room_state(roomId: str, request: Request) -> RoomState:
-    if not roomId:
-        raise HTTPException(status_code=404, detail="Room not found")
-    state = request.app.state.room_manager.get_room_state(roomId)
-    return RoomState(**state)
+# Removed: /rooms/{roomId}/state — initial state is now returned by POST /rooms
 
 def get_bus(request: Request) -> EventBus:
     return request.app.state.event_bus

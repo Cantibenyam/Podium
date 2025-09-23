@@ -1,13 +1,8 @@
 "use client";
 
 import { generateBot, generateReaction, type Bot } from "@/lib/mockAudience";
-import {
-  motion,
-  PanInfo,
-  useAnimationControls,
-  useReducedMotion,
-} from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion, useReducedMotion } from "framer-motion";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type WalkingAudienceProps = {
   count?: number;
@@ -193,13 +188,11 @@ export default function WalkingAudience({
 export function WalkableStage({
   bots,
   className,
-  speed = 90,
-  padding = 24,
+  reactionsByBotId,
 }: {
   bots: Bot[];
   className?: string;
-  speed?: number; // px per second
-  padding?: number; // keep bots away from edges
+  reactionsByBotId?: Record<string, string | undefined>;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [mounted, setMounted] = useState(false);
@@ -218,6 +211,31 @@ export function WalkableStage({
     return () => window.removeEventListener("resize", update);
   }, [mounted]);
 
+  // Compute semi-circle seat positions
+  const seats = useMemo(() => {
+    const n = bots.length;
+    const w = stageSize.width;
+    const h = stageSize.height;
+    if (n === 0 || w === 0 || h === 0)
+      return [] as Array<{ x: number; y: number }>;
+    const cx = w / 2;
+    const radius = Math.min(w, h) * 0.38;
+    const cy = Math.max(radius + 24, h - 24) - radius; // center so arc sits above bottom
+    const startAngle = Math.PI + Math.PI / 5; // ~200deg
+    const endAngle = -Math.PI / 5; // ~-36deg
+    const angles =
+      n === 1
+        ? [Math.PI]
+        : Array.from(
+            { length: n },
+            (_, i) => startAngle + ((endAngle - startAngle) * i) / (n - 1)
+          );
+    return angles.map((a) => ({
+      x: cx + radius * Math.cos(a),
+      y: cy + radius * Math.sin(a),
+    }));
+  }, [bots.length, stageSize.width, stageSize.height]);
+
   if (!mounted) return null;
 
   return (
@@ -228,179 +246,60 @@ export function WalkableStage({
       }`}
       aria-label="Stage"
     >
-      {bots.map((bot) => (
-        <AutonomousBot
+      {bots.map((bot, index) => (
+        <SeatedBot
           key={bot.id}
           bot={bot}
-          stageRef={stageRef}
-          stageSize={stageSize}
-          speed={speed}
-          padding={padding}
+          seat={
+            seats[index] || { x: stageSize.width / 2, y: stageSize.height / 2 }
+          }
+          centerX={stageSize.width / 2}
+          delay={index * 0.25}
+          reactionText={reactionsByBotId?.[bot.id]}
         />
       ))}
     </div>
   );
 }
 
-function AutonomousBot({
+function SeatedBot({
   bot,
-  stageRef,
-  stageSize,
-  speed,
-  padding,
+  seat,
+  centerX,
+  delay,
+  reactionText,
 }: {
   bot: Bot;
-  stageRef: React.RefObject<HTMLDivElement | null>;
-  stageSize: { width: number; height: number };
-  speed: number;
-  padding: number;
+  seat: { x: number; y: number };
+  centerX: number;
+  delay: number;
+  reactionText?: string;
 }) {
   const prefersReduced = useReducedMotion();
-  const controls = useAnimationControls();
-  const [moving, setMoving] = useState(false);
-  const [facingRight, setFacingRight] = useState(true);
-  const draggingRef = useRef(false);
-  const posRef = useRef<{ x: number; y: number }>({
-    x: Math.random() * Math.max(1, stageSize.width - padding * 2) + padding,
-    y: Math.random() * Math.max(1, stageSize.height - padding * 2) + padding,
-  });
-  const [resumeCounter, setResumeCounter] = useState(0);
-
-  // Helper to clamp inside the stage
-  const clampPoint = useCallback(
-    (x: number, y: number) => {
-      const maxX = Math.max(padding, stageSize.width - padding);
-      const maxY = Math.max(padding, stageSize.height - padding);
-      return {
-        x: Math.min(Math.max(x, padding), maxX),
-        y: Math.min(Math.max(y, padding), maxY),
-      };
-    },
-    [stageSize.width, stageSize.height, padding]
-  );
-
-  // Movement loop
-  useEffect(() => {
-    if (prefersReduced) return;
-    let cancelled = false;
-
-    async function loop() {
-      // If dragging, wait and retry
-      if (draggingRef.current || cancelled) return;
-
-      // Pick a random target
-      const targetRaw = {
-        x: Math.random() * Math.max(1, stageSize.width - padding * 2) + padding,
-        y:
-          Math.random() * Math.max(1, stageSize.height - padding * 2) + padding,
-      };
-      const target = clampPoint(targetRaw.x, targetRaw.y);
-
-      const from = posRef.current;
-      const dx = target.x - from.x;
-      const dy = target.y - from.y;
-      const distance = Math.hypot(dx, dy);
-      const duration = Math.max(0.001, distance / speed);
-
-      setMoving(true);
-      setFacingRight(dx >= 0);
-      try {
-        await controls.start({
-          x: target.x,
-          y: target.y,
-          transition: { duration, ease: "linear" },
-        });
-      } catch {
-        // animation stopped (e.g., drag start)
-      }
-      posRef.current = target;
-      setMoving(false);
-
-      if (cancelled) return;
-      // tiny pause before next target
-      await new Promise((r) => setTimeout(r, 150 + Math.random() * 250));
-      if (!draggingRef.current && !cancelled) loop();
-    }
-
-    // Initialize position and start loop
-    controls.set(posRef.current);
-    loop();
-
-    return () => {
-      cancelled = true;
-      controls.stop();
-    };
-    // re-run when stage size changes or rerunRef toggled
-  }, [
-    stageSize.width,
-    stageSize.height,
-    speed,
-    clampPoint,
-    controls,
-    prefersReduced,
-    resumeCounter,
-  ]);
-
-  const onDragStart = () => {
-    draggingRef.current = true;
-    controls.stop();
-    setMoving(false);
-  };
-
-  const onDragEnd = (
-    _evt: MouseEvent | TouchEvent | PointerEvent,
-    info: PanInfo
-  ) => {
-    draggingRef.current = false;
-    // Update pos from transform, then resume loop by nudging ref
-    const rect = stageRef.current?.getBoundingClientRect();
-    const stageLeft = rect?.left ?? 0;
-    const stageTop = rect?.top ?? 0;
-    const x = info.point.x - stageLeft;
-    const y = info.point.y - stageTop;
-    const clamped = clampPoint(x, y);
-    posRef.current = clamped;
-    controls.set(clamped);
-    setResumeCounter((c) => c + 1);
-  };
+  const facingRight = seat.x >= centerX;
 
   if (prefersReduced) {
     return (
-      <div
-        className="absolute"
-        style={{ left: posRef.current.x, top: posRef.current.y }}
-      >
-        <span className="text-4xl select-none">{bot.avatar}</span>
+      <div className="absolute" style={{ left: seat.x, top: seat.y }}>
+        <span className="text-5xl md:text-6xl select-none inline-block">
+          {bot.avatar}
+        </span>
       </div>
     );
   }
 
   return (
     <motion.div
-      className="absolute will-change-transform cursor-grab active:cursor-grabbing"
-      drag
-      dragConstraints={stageRef}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      dragElastic={0.1}
-      dragMomentum={false}
-      animate={controls}
-      initial={false}
+      className="absolute will-change-transform"
+      initial={{ x: centerX, y: seat.y + 60, opacity: 0 }}
+      animate={{ x: seat.x, y: seat.y, opacity: 1 }}
+      transition={{ type: "spring", stiffness: 240, damping: 22, delay }}
       style={{ x: 0, y: 0, transformOrigin: "center" }}
       aria-label={bot.name}
     >
       <motion.div
-        key={moving ? "walk" : "idle"}
-        animate={
-          moving
-            ? { y: [0, -4, 0, -2, 0], rotateZ: [-2, 2, -2, 2, -2] }
-            : { scale: [1, 1.03, 1] }
-        }
-        transition={
-          moving
-            ? { duration: 0.8, repeat: Infinity, ease: "easeInOut" }
-            : { duration: 2.0, repeat: Infinity, ease: "easeInOut" }
-        }
+        animate={{ scale: [1, 1.03, 1] }}
+        transition={{ duration: 2.0, repeat: Infinity, ease: "easeInOut" }}
         className="relative"
         style={{ willChange: "transform" }}
       >
@@ -410,6 +309,15 @@ function AutonomousBot({
         >
           {bot.avatar}
         </span>
+        <motion.div
+          initial={false}
+          animate={reactionText ? { opacity: 1, y: 0 } : { opacity: 0, y: -6 }}
+          transition={{ duration: 0.2 }}
+          className="absolute -top-8 left-1/2 -translate-x-1/2 rounded-md bg-card text-card-foreground border px-2 py-1 text-md whitespace-nowrap shadow"
+          style={{ willChange: "opacity, transform" }}
+        >
+          {reactionText}
+        </motion.div>
       </motion.div>
     </motion.div>
   );

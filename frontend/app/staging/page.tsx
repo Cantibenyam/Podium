@@ -11,6 +11,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spotlight } from "@/components/ui/spotlight-new";
 import WalkingAudience from "@/components/walkers";
+import { wsClient } from "@/lib/wsClient";
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -44,8 +45,27 @@ export default function QuestionnairePage() {
         body: JSON.stringify({}),
       });
       if (!res.ok) throw new Error(`create room failed ${res.status}`);
-      const { id: roomId } = await res.json();
-      router.push(`/scene?roomId=${roomId}`);
+      const {
+        id: roomId,
+        bots,
+      }: {
+        id: string;
+        bots?: Array<{
+          id: string;
+          name: string;
+          avatar?: string;
+          persona?: { stance?: string; domain?: string };
+        }>;
+      } = await res.json();
+      // Establish WS before navigating
+      await wsClient.connect(roomId);
+      // Seed initial state into shared client by emitting a synthetic join for each bot
+      try {
+        (bots || []).forEach((b) => {
+          wsClient.sendJson({ event: "join", payload: { bot: b } });
+        });
+      } catch {}
+      router.push(`/scene`);
     } catch {
       setBusy(false);
     }

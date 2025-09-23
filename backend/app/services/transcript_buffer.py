@@ -18,8 +18,9 @@ class TranscriptBuffer:
     - Flush if more than max_interval_s elapsed since last flush
     """
 
-    def __init__(self, max_interval_s: float = 2.0) -> None:
+    def __init__(self, max_interval_s: float = 2.0, flush_on_interval: bool = True) -> None:
         self.max_interval_s = max_interval_s
+        self.flush_on_interval = flush_on_interval
         self._room_to_state: dict[str, BufferState] = {}
 
     def append(self, room_id: str, piece: str) -> tuple[bool, str]:
@@ -34,7 +35,7 @@ class TranscriptBuffer:
         should_flush = False
         if any(state.text.endswith(ch) for ch in (".", "!", "?")):
             should_flush = True
-        elif now - state.last_flush_s >= self.max_interval_s:
+        elif self.flush_on_interval and (now - state.last_flush_s >= self.max_interval_s):
             should_flush = True
 
         if should_flush and state.text:

@@ -11,6 +11,7 @@ type Props = {
   timerClassName?: string;
   roomId?: string;
   apiBase?: string;
+  sendTranscript?: (text: string) => void;
 };
 
 type Record = {
@@ -43,6 +44,7 @@ export const AudioRecorderWithVisualizer = ({
   timerClassName,
   roomId,
   apiBase,
+  sendTranscript,
 }: Props) => {
   const dbg = (...args: any[]) => {
     try {
@@ -99,7 +101,7 @@ export const AudioRecorderWithVisualizer = ({
   const postingRef = useRef<boolean>(false);
 
   async function postTranscriptChunk(text: string) {
-    if (!roomId || !apiBase || !text) return;
+    if (!roomId || !text) return;
     if (postingRef.current) return; // simple back-pressure gate
     postingRef.current = true;
     try {
@@ -108,11 +110,7 @@ export const AudioRecorderWithVisualizer = ({
         len: text.length,
         preview: text.slice(0, 64),
       });
-      await fetch(`${apiBase}/webhooks/deepgram`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomId, text }),
-      });
+      if (sendTranscript) sendTranscript(text);
       dbg("posted transcript chunk OK");
     } catch {
       dbg("post transcript chunk failed");
@@ -130,13 +128,27 @@ export const AudioRecorderWithVisualizer = ({
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices
         .getUserMedia({
-          audio: true,
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          } as MediaTrackConstraints,
         })
         .then(async (stream) => {
           setIsRecording(true);
           // ============ Analyzing ============
           const AudioContext = window.AudioContext;
-          const audioCtx = new AudioContext();
+          let audioCtx: AudioContext;
+          try {
+            audioCtx = new AudioContext({
+              latencyHint: "interactive",
+              sampleRate: 16000,
+            });
+          } catch {
+            audioCtx = new AudioContext();
+          }
           dbg("audio context created", { sampleRate: audioCtx.sampleRate });
           const analyser = audioCtx.createAnalyser();
           const source = audioCtx.createMediaStreamSource(stream);
@@ -144,9 +156,7 @@ export const AudioRecorderWithVisualizer = ({
           // ============ Deepgram Live WS ============
           try {
             const thisSessionId = ++transcriptSessionIdRef.current;
-            const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY as
-              | string
-              | undefined;
+            const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY as string;
             if (apiKey) {
               dbg("initializing deepgram live connection");
               const deepgram = createClient(apiKey);
@@ -156,10 +166,10 @@ export const AudioRecorderWithVisualizer = ({
                 interim_results: true,
                 encoding: "linear16",
                 filter_channels: true,
-                endpointing: 10000,
+                endpointing: 200, // favor quicker finalization
                 vad_events: true,
                 filler_words: true,
-                language: "multi",
+                language: "en",
                 sample_rate: audioCtx.sampleRate,
               });
               dgConn.on(LiveTranscriptionEvents.Open, () => {
@@ -180,11 +190,7 @@ export const AudioRecorderWithVisualizer = ({
                 } else {
                   if (text.length > 0) {
                     setFinalText((prev) => (prev ? `${prev} ${text}` : text));
-                    // Send final chunk to backend webhook (buffered there)
-                    dbg("final transcript", {
-                      len: text.length,
-                      preview: text.slice(0, 80),
-                    });
+                    // Send only final segments; backend will flush on sentence boundaries
                     postTranscriptChunk(text);
                   }
                   setInterimText("");
@@ -338,6 +344,7 @@ export const AudioRecorderWithVisualizer = ({
     setFinalText("");
     setInterimText("");
   }
+
   const downloadCurrentAudio = () => {
     try {
       if (recordingChunks.length > 0) {

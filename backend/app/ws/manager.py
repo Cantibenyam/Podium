@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict, Set
+import asyncio
 
 from fastapi import WebSocket
 
@@ -31,11 +32,16 @@ class ConnectionManager:
 
     async def broadcast_json(self, room_id: str, message: dict) -> None:
         sockets = list(self._room_to_sockets.get(room_id, set()))
-        for ws in sockets:
+        if not sockets:
+            return
+
+        async def _send(ws: WebSocket) -> None:
             try:
                 await ws.send_json(message)
             except Exception:
                 # If sending fails, drop the socket from the room
                 self.disconnect(room_id, ws)
+
+        await asyncio.gather(*(_send(ws) for ws in sockets), return_exceptions=True)
 
 

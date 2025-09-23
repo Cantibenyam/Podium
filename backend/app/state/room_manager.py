@@ -65,14 +65,12 @@ class RoomManager:
     def get_service_bots_in_room(self, room_id: str) -> list[ServiceBot]:
         room = self.ensure_room(room_id)
         return list(room.bots.values())
-
-    def get_room_state(self, room_id: str) -> dict:
         room = self.ensure_room(room_id)
         api_bots = [
             SchemaBot(
                 id=bot.id,
                 name=bot.personality.name,
-                avatar="CockWrench🥵 💦",
+                avatar="🤖",
                 persona=SchemaPersona(
                     stance=bot.personality.stance,
                     domain=bot.personality.domain,

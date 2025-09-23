@@ -3,14 +3,14 @@
 import { AudioRecorderWithVisualizer } from "@/components/voice";
 import { WalkableStage } from "@/components/walkers";
 import type { Bot as AudienceBot } from "@/lib/mockAudience";
-import { useRouter, useSearchParams } from "next/navigation";
+import { wsClient } from "@/lib/wsClient";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 export default function ScenePage() {
-  const searchParams = useSearchParams();
   const router = useRouter();
   // No mock data; bots come from server state and ws join/leave events
-  const [roomId] = useState<string | null>(searchParams.get("roomId"));
+  const [roomId, setRoomId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [, setBotNames] = useState<Record<string, string>>({});
   const botNamesRef = useRef<Record<string, string>>({});
@@ -25,35 +25,31 @@ export default function ScenePage() {
   >([]);
   const [serverBots, setServerBots] = useState<AudienceBot[]>([]);
   const [showStage, setShowStage] = useState<boolean>(false);
-  const wsRef = useRef<WebSocket | null>(null);
+  const [reactionsByBotId, setReactionsByBotId] = useState<
+    Record<string, string | undefined>
+  >({});
+  const reactionTimersRef = useRef<Record<string, number>>({});
+  // Legacy ref no longer used with shared client
+  const sendTranscriptOverWs = useRef<((text: string) => void) | null>(null);
   const apiBase = useMemo(
     () => process.env.NEXT_PUBLIC_BACKEND_URL as string,
     []
   );
-  const wsBase = useMemo(() => {
-    if (!apiBase) return "";
-    try {
-      const url = new URL(apiBase);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      return url.origin;
-    } catch {
-      return "";
-    }
-  }, [apiBase]);
+  // ws base handled by shared client
 
-  // Guard: require roomId present
+  // Guard: require active WS connection (roomId) else send back to staging
   useEffect(() => {
-    if (!roomId) {
-      router.replace("/");
+    const id = wsClient.getRoomId();
+    if (!id || !wsClient.isConnected()) {
+      router.replace("/staging");
+      return;
     }
-  }, [roomId, router]);
+    setRoomId(id);
+  }, [router]);
 
-  // Open websocket when room is ready
+  // Subscribe to shared WS once connected
   useEffect(() => {
-    if (!roomId || !wsBase) return;
-    const wsUrl = `${wsBase}/ws/rooms/${roomId}`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    if (!wsClient.isConnected()) return;
     const add = (msg: string) =>
       setLogs((prev) => [msg, ...prev].slice(0, 200));
     const toEmoji = (unicodeLike?: string): string | undefined => {
@@ -70,10 +66,9 @@ export default function ScenePage() {
         return undefined;
       }
     };
-    ws.onopen = () => add(`[ws] connected: ${wsUrl}`);
-    ws.onmessage = (evt) => {
+    add(`[ws] connected`);
+    const unsubscribe = wsClient.subscribe((data) => {
       try {
-        const data = JSON.parse(String(evt.data));
         add(`[event] ${data.event} ${JSON.stringify(data.payload)}`);
         const eventType = data?.event as string;
         const payload = data?.payload ?? {};
@@ -142,53 +137,32 @@ export default function ScenePage() {
                 emoji,
               },
             ]);
+            // Show ephemeral bubble on stage avatar
+            const bubble = `${emoji ? `${emoji} ` : ""}${text}`;
+            setReactionsByBotId((prev) => ({ ...prev, [botId]: bubble }));
+            // clear any existing timer
+            const existing = reactionTimersRef.current[botId];
+            if (existing) window.clearTimeout(existing);
+            const t = window.setTimeout(() => {
+              setReactionsByBotId((prev) => ({ ...prev, [botId]: undefined }));
+              delete reactionTimersRef.current[botId];
+            }, 1600);
+            reactionTimersRef.current[botId] = t;
           }
         }
       } catch {
-        add(`[message] ${String(evt.data)}`);
+        // ignore
       }
-    };
-    ws.onerror = () => add(`[ws] error`);
-    ws.onclose = () => add(`[ws] closed`);
+    });
+    sendTranscriptOverWs.current = (text: string) =>
+      wsClient.sendClientTranscript(text);
     return () => {
-      try {
-        ws.close();
-      } catch {}
-      wsRef.current = null;
-    };
-  }, [roomId, wsBase]);
-
-  // Fetch initial room state (bots) from server
-  useEffect(() => {
-    if (!roomId || !apiBase) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${apiBase}/rooms/${roomId}/state`);
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          bots?: Array<{ id: string; name: string; avatar?: string }>;
-        };
-        if (cancelled) return;
-        const bots: Array<{ id: string; name: string; avatar?: string }> =
-          Array.isArray(data?.bots) ? data.bots : [];
-        setServerBots(
-          bots.map((b) => ({
-            id: b.id,
-            name: b.name,
-            avatar: b.avatar || "🤖",
-          }))
-        );
-        const names: Record<string, string> = {};
-        for (const b of bots) names[b.id] = b.name;
-        setBotNames(names);
-        botNamesRef.current = names;
-      } catch {}
-    })();
-    return () => {
-      cancelled = true;
+      unsubscribe();
+      sendTranscriptOverWs.current = null;
     };
   }, [roomId, apiBase]);
+
+  // Initial state fetched in ws.onopen above
   // reactions handled inside walkers speech bubbles; grid logic removed
 
   return (
@@ -214,7 +188,10 @@ export default function ScenePage() {
         </button>
 
         {showStage ? (
-          <WalkableStage bots={serverBots} />
+          <WalkableStage
+            bots={serverBots}
+            reactionsByBotId={reactionsByBotId}
+          />
         ) : (
           <div className="grid gap-3 md:grid-cols-2 h-full">
             <div className="rounded-md border bg-card text-card-foreground p-3 h-full">
@@ -255,6 +232,9 @@ export default function ScenePage() {
             <AudioRecorderWithVisualizer
               roomId={roomId || undefined}
               apiBase={apiBase}
+              sendTranscript={(text: string) =>
+                sendTranscriptOverWs.current?.(text)
+              }
             />
           </div>
         </div>
