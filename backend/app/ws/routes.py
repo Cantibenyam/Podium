@@ -41,12 +41,45 @@ async def websocket_room_endpoint(
             payload = data.get("payload") or {}
             if event == "client_transcript":
                 text = payload.get("text")
+                meta = payload.get("meta") or {}
                 if isinstance(text, str) and text.strip():
-                    flushed, chunk = websocket.app.state.transcript_buffer.append(roomId, text.strip())  # type: ignore[attr-defined]
+                    # Append with meta; returns (flushed, chunk, flush_meta)
+                    flushed, chunk, flush_meta = websocket.app.state.transcript_buffer.append(roomId, text.strip(), meta)  # type: ignore[attr-defined]
                     if flushed and chunk:
                         await websocket.app.state.event_bus.publish(  # type: ignore[attr-defined]
-                            "transcript:chunk", {"roomId": roomId, "text": chunk}
+                            "transcript:chunk", {"roomId": roomId, "text": chunk, "flush_meta": flush_meta}
                         )
+            elif event == "join" and payload.get("bot"):
+                # Allow client to seed initial bots after room creation
+                try:
+                    bot = payload.get("bot")
+                    await bus.publish("bot:join", {"roomId": roomId, "bot": bot})
+                except Exception:
+                    pass
+            elif event == "seed_bots" and isinstance(payload.get("bots"), list):
+                try:
+                    for bot in payload.get("bots", []):
+                        await bus.publish("bot:join", {"roomId": roomId, "bot": bot})
+                except Exception:
+                    pass
+            elif event == "state_request":
+                # Return current bots in room to the requesting client only
+                try:
+                    room = websocket.app.state.room_manager.ensure_room(roomId)  # type: ignore[attr-defined]
+                    bots = []
+                    for b in room.bots.values():
+                        bots.append({
+                            "id": b.id,
+                            "name": b.personality.name,
+                            "avatar": getattr(b, 'avatar', '🤖'),
+                            "persona": {
+                                "stance": b.personality.stance,
+                                "domain": b.personality.domain,
+                            },
+                        })
+                    await websocket.send_json({"event": "state", "payload": {"bots": bots}})
+                except Exception:
+                    await websocket.send_json({"event": "state", "payload": {"bots": []}})
     except WebSocketDisconnect:
         manager.disconnect(roomId, websocket)
 

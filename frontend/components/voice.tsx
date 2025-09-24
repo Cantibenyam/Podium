@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
+import { SpeechStream } from "@/lib/speechStream";
 import { cn } from "@/lib/utils";
-import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
 import { AnimatePresence, motion } from "framer-motion";
 import { Download, FileDown, Mic, Trash } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -11,7 +11,7 @@ type Props = {
   timerClassName?: string;
   roomId?: string;
   apiBase?: string;
-  sendTranscript?: (text: string) => void;
+  sendTranscript?: (text: string, meta?: any) => void;
 };
 
 type Record = {
@@ -20,8 +20,6 @@ type Record = {
   file: unknown;
 };
 
-let recorder: MediaRecorder;
-let recordingChunks: BlobPart[] = [];
 let timerTimeout: NodeJS.Timeout;
 
 // Utility function to pad a number with leading zeros
@@ -29,15 +27,7 @@ const padWithLeadingZeros = (num: number, length: number): string => {
   return String(num).padStart(length, "0");
 };
 
-// Utility function to download a blob
-const downloadBlob = (blob: Blob) => {
-  const downloadLink = document.createElement("a");
-  downloadLink.href = URL.createObjectURL(blob);
-  downloadLink.download = `Audio_${new Date().getMilliseconds()}.mp3`;
-  document.body.appendChild(downloadLink);
-  downloadLink.click();
-  document.body.removeChild(downloadLink);
-};
+//
 
 export const AudioRecorderWithVisualizer = ({
   className,
@@ -92,15 +82,16 @@ export const AudioRecorderWithVisualizer = ({
   });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<any>(null);
-  const deepgramRef = useRef<any>(null);
-  const dgOpenRef = useRef<boolean>(false);
-  const transcriptSessionIdRef = useRef<number>(0);
+  const speechRef = useRef<SpeechStream | null>(null);
+  const lastUtteranceEndTsDGRef = useRef<number | null>(null);
+  const lastSpeechStartTsDGRef = useRef<number | null>(null);
+  const lastSilenceBeforeThisUtteranceRef = useRef<number | null>(null);
   const [finalText, setFinalText] = useState<string>("");
   const [interimText, setInterimText] = useState<string>("");
   const transcriptRef = useRef<HTMLDivElement>(null);
   const postingRef = useRef<boolean>(false);
 
-  async function postTranscriptChunk(text: string) {
+  async function postTranscriptChunk(text: string, meta?: any) {
     if (!roomId || !text) return;
     if (postingRef.current) return; // simple back-pressure gate
     postingRef.current = true;
@@ -110,7 +101,7 @@ export const AudioRecorderWithVisualizer = ({
         len: text.length,
         preview: text.slice(0, 64),
       });
-      if (sendTranscript) sendTranscript(text);
+      if (sendTranscript) sendTranscript(text, meta);
       dbg("posted transcript chunk OK");
     } catch {
       dbg("post transcript chunk failed");
@@ -125,258 +116,87 @@ export const AudioRecorderWithVisualizer = ({
       apiBase,
       hasDGKey: Boolean(process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY),
     });
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices
-        .getUserMedia({
-          audio: {
-            channelCount: 1,
-            sampleRate: 16000,
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-          } as MediaTrackConstraints,
-        })
-        .then(async (stream) => {
-          setIsRecording(true);
-          // ============ Analyzing ============
-          const AudioContext = window.AudioContext;
-          let audioCtx: AudioContext;
-          try {
-            audioCtx = new AudioContext({
-              latencyHint: "interactive",
-              sampleRate: 16000,
-            });
-          } catch {
-            audioCtx = new AudioContext();
-          }
-          dbg("audio context created", { sampleRate: audioCtx.sampleRate });
-          const analyser = audioCtx.createAnalyser();
-          const source = audioCtx.createMediaStreamSource(stream);
-          source.connect(analyser);
-          // ============ Deepgram Live WS ============
-          try {
-            const thisSessionId = ++transcriptSessionIdRef.current;
-            const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY as string;
-            if (apiKey) {
-              dbg("initializing deepgram live connection");
-              const deepgram = createClient(apiKey);
-              const dgConn = deepgram.listen.live({
-                model: "nova-3",
-                smart_format: true,
-                interim_results: true,
-                encoding: "linear16",
-                filter_channels: true,
-                endpointing: 200, // favor quicker finalization
-                vad_events: true,
-                filler_words: true,
-                language: "en",
-                sample_rate: audioCtx.sampleRate,
-              });
-              dgConn.on(LiveTranscriptionEvents.Open, () => {
-                dgOpenRef.current = true;
-                dbg("deepgram live open");
-              });
-              dgConn.on(LiveTranscriptionEvents.Close, () => {
-                dgOpenRef.current = false;
-                dbg("deepgram live close");
-              });
-              dgConn.on(LiveTranscriptionEvents.Transcript, (payload: any) => {
-                if (thisSessionId !== transcriptSessionIdRef.current) return;
-                const alt = payload?.channel?.alternatives?.[0];
-                const text = ((alt?.transcript as string) || "").trim();
-                const isFinal = Boolean((payload as any)?.is_final);
-                if (!isFinal) {
-                  setInterimText(text);
-                } else {
-                  if (text.length > 0) {
-                    setFinalText((prev) => (prev ? `${prev} ${text}` : text));
-                    // Send only final segments; backend will flush on sentence boundaries
-                    postTranscriptChunk(text);
-                  }
-                  setInterimText("");
-                }
-              });
-              deepgramRef.current = dgConn;
-            } else {
-              dbg("NEXT_PUBLIC_DEEPGRAM_API_KEY is not set");
-            }
-          } catch (err) {
-            dbg("Deepgram SDK init failed", err);
-          }
-          mediaRecorderRef.current = {
-            stream,
-            analyser,
-            mediaRecorder: null,
-            audioContext: audioCtx,
-          };
-
-          const mimeType = MediaRecorder.isTypeSupported("audio/mpeg")
-            ? "audio/mpeg"
-            : MediaRecorder.isTypeSupported("audio/webm")
-            ? "audio/webm"
-            : "audio/wav";
-
-          const options = { mimeType };
-          mediaRecorderRef.current.mediaRecorder = new MediaRecorder(
-            stream,
-            options
-          );
-          mediaRecorderRef.current.mediaRecorder.start();
-          recordingChunks = [];
-          // ============ Recording ============
-          recorder = new MediaRecorder(stream);
-          // Emit chunks every second so we can download without stopping
-          recorder.start(1000);
-          recorder.ondataavailable = (e) => {
-            recordingChunks.push(e.data);
-          };
-          // ============ AudioWorklet (replace deprecated ScriptProcessorNode) ============
-          try {
-            // load worklet asynchronously without using await in non-async func
-            audioCtx.audioWorklet
-              .addModule("/worklets/pcm-processor.js")
-              .then(() => {
-                dbg("audio worklet module loaded");
-                const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
-                source.connect(worklet);
-                const volumeSink = audioCtx.createGain();
-                volumeSink.gain.value = 0;
-                worklet.connect(volumeSink);
-                volumeSink.connect(audioCtx.destination);
-                worklet.port.onmessage = (event) => {
-                  if (!deepgramRef.current || !dgOpenRef.current) return;
-                  const channelData = event.data; // Float32Array
-                  const ab = floatTo16BitPCM(channelData);
-                  try {
-                    deepgramRef.current.send(ab);
-                  } catch {}
-                };
-              })
-              .catch((err) => {
-                dbg("AudioWorklet failed to load", err);
-              });
-          } catch (err) {
-            dbg("AudioWorklet unavailable; falling back", err);
-          }
-        })
-        .catch((error) => {
-          try {
-            alert(error);
-          } catch {}
-          dbg("getUserMedia error", error);
-        });
-    }
-  }
-  function resetRecording() {
-    dbg("resetRecording called");
-    const { mediaRecorder, stream, analyser, audioContext } =
-      mediaRecorderRef.current;
-
-    // Invalidate any in-flight transcription events
-    transcriptSessionIdRef.current++;
-
-    if (mediaRecorder) {
-      mediaRecorder.onstop = () => {
-        recordingChunks = [];
-      };
-      mediaRecorder.stop();
-    } else {
-      alert("recorder instance is null!");
+    const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY as string;
+    if (!apiKey) {
+      dbg("NEXT_PUBLIC_DEEPGRAM_API_KEY is not set");
+      return;
     }
 
-    // Close Deepgram live connection if open
-    try {
-      if (deepgramRef.current) {
-        if (typeof deepgramRef.current.finish === "function") {
-          dbg("deepgram.finish()");
-          deepgramRef.current.finish();
+    const speech = new SpeechStream({
+      apiKey,
+      endpointing: 400,
+      utteranceEndMs: 1300,
+      language: "en",
+      onOpen: () => dbg("deepgram live open"),
+      onClose: () => dbg("deepgram live close"),
+      onSpeechStarted: (ts, silence) => {
+        if (silence != null) {
+          dbg("SpeechStarted", {
+            ts,
+            silence_seconds_dg: Number(silence.toFixed(3)),
+          });
+        } else {
+          dbg("SpeechStarted", { ts });
         }
-        if (typeof deepgramRef.current.close === "function") {
-          dbg("deepgram.close()");
-          deepgramRef.current.close();
+        try {
+          const speechStartTs = typeof ts === "number" ? ts : null;
+          lastSpeechStartTsDGRef.current = speechStartTs;
+          const lastEnd = lastUtteranceEndTsDGRef.current;
+          const silenceDG =
+            speechStartTs != null && lastEnd != null
+              ? Math.max(0, speechStartTs - lastEnd)
+              : speechStartTs != null
+              ? Math.max(0, speechStartTs)
+              : null;
+          lastSilenceBeforeThisUtteranceRef.current =
+            silenceDG != null ? silenceDG : null;
+        } catch {}
+      },
+      onUtteranceEnd: (ts) => {
+        dbg("UtteranceEnd", { ts });
+        try {
+          lastUtteranceEndTsDGRef.current = typeof ts === "number" ? ts : null;
+        } catch {}
+      },
+      onTranscript: (text, isFinal) => {
+        if (!isFinal) {
+          setInterimText(text);
+        } else {
+          if (text.length > 0) {
+            setFinalText((prev) => (prev ? `${prev} ${text}` : text));
+            const meta: any = {
+              silence_preceding_s:
+                lastSilenceBeforeThisUtteranceRef.current ?? null,
+              speech_started_ts: lastSpeechStartTsDGRef.current ?? null,
+              last_utterance_end_ts: lastUtteranceEndTsDGRef.current ?? null,
+            };
+            postTranscriptChunk(text, meta);
+          }
+          setInterimText("");
         }
-      }
-    } catch {
-      // ignore
-    } finally {
-      deepgramRef.current = null;
-      dgOpenRef.current = false;
-    }
+      },
+    });
 
-    // Stop the web audio context and the analyser node
-    if (analyser) {
-      analyser.disconnect();
-    }
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-    }
-    if (audioContext) {
-      audioContext.close();
-    }
-    setIsRecording(false);
-    setIsRecordingFinished(true);
-    setTimer(0);
-    clearTimeout(timerTimeout);
+    speech
+      .start()
+      .then(() => {
+        setIsRecording(true);
+        mediaRecorderRef.current = {
+          stream: speech.getStream(),
+          analyser: speech.getAnalyser(),
+          mediaRecorder: null,
+          audioContext: null,
+        };
+      })
+      .catch((error) => {
+        try {
+          alert(error);
+        } catch {}
+        dbg("getUserMedia/stream start error", error);
+      });
 
-    // Clear the animation frame and canvas
-    cancelAnimationFrame(animationRef.current || 0);
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const canvasCtx = canvas.getContext("2d");
-      if (canvasCtx) {
-        const WIDTH = canvas.width;
-        const HEIGHT = canvas.height;
-        canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
-      }
-    }
-
-    // Revoke any existing audio object URL and clear current record
-    try {
-      if (typeof currentRecord.file === "string") {
-        URL.revokeObjectURL(currentRecord.file as string);
-      }
-    } catch {
-      // ignore
-    }
-    setCurrentRecord({ id: -1, name: "", file: null });
-
-    // Clear transcript text
-    setFinalText("");
-    setInterimText("");
+    speechRef.current = speech;
   }
-
-  const downloadCurrentAudio = () => {
-    try {
-      if (recordingChunks.length > 0) {
-        const recordBlob = new Blob(recordingChunks, { type: "audio/wav" });
-        downloadBlob(recordBlob);
-      } else if (typeof currentRecord.file === "string") {
-        const a = document.createElement("a");
-        a.href = currentRecord.file as string;
-        a.download = `Audio_${Date.now()}.wav`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
-    } catch {}
-  };
-
-  // Convert Float32 PCM to 16-bit little-endian PCM ArrayBuffer
-  function floatTo16BitPCM(float32Array: Float32Array): ArrayBuffer {
-    const buffer = new ArrayBuffer(float32Array.length * 2);
-    const view = new DataView(buffer);
-    let offset = 0;
-    for (let i = 0; i < float32Array.length; i++, offset += 2) {
-      const sample = Math.max(-1, Math.min(1, float32Array[i]));
-      view.setInt16(
-        offset,
-        sample < 0 ? sample * 0x8000 : sample * 0x7fff,
-        true
-      );
-    }
-    return buffer;
-  }
-
   // Effect to update the timer every second
   useEffect(() => {
     if (isRecording) {
@@ -456,12 +276,6 @@ export const AudioRecorderWithVisualizer = ({
     el.scrollLeft = el.scrollWidth;
   }, [finalText, interimText]);
 
-  // Log initial props
-  useEffect(() => {
-    dbg("component mounted", { roomId, apiBase });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   function downloadTranscript() {
     const text = `${finalText} ${interimText}`.trim();
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
@@ -471,6 +285,65 @@ export const AudioRecorderWithVisualizer = ({
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  }
+
+  const downloadCurrentAudio = () => {
+    speechRef.current?.downloadCurrentAudio();
+  };
+
+  function resetRecording() {
+    dbg("resetRecording called");
+    const { mediaRecorder, stream, analyser, audioContext } =
+      mediaRecorderRef.current;
+
+    // Invalidate any in-flight transcription events (handled within SpeechStream)
+    mediaRecorder?.stop();
+
+    // Close Deepgram via SpeechStream
+    try {
+      speechRef.current?.stop();
+    } catch {}
+
+    // Stop the web audio context and the analyser node
+    if (analyser) {
+      analyser.disconnect();
+    }
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+    if (audioContext) {
+      audioContext.close();
+    }
+    setIsRecording(false);
+    setIsRecordingFinished(true);
+    setTimer(0);
+    clearTimeout(timerTimeout);
+
+    // Clear the animation frame and canvas
+    cancelAnimationFrame(animationRef.current || 0);
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const canvasCtx = canvas.getContext("2d");
+      if (canvasCtx) {
+        const WIDTH = canvas.width;
+        const HEIGHT = canvas.height;
+        canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
+      }
+    }
+
+    // Revoke any existing audio object URL and clear current record
+    try {
+      if (typeof currentRecord.file === "string") {
+        URL.revokeObjectURL(currentRecord.file as string);
+      }
+    } catch {
+      // ignore
+    }
+    setCurrentRecord({ id: -1, name: "", file: null });
+
+    // Clear transcript text
+    setFinalText("");
+    setInterimText("");
   }
 
   return (

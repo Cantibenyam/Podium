@@ -8,7 +8,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Slider } from "@/components/ui/slider";
+// removed slider
 import { Spotlight } from "@/components/ui/spotlight-new";
 import WalkingAudience from "@/components/walkers";
 import { wsClient } from "@/lib/wsClient";
@@ -16,11 +16,11 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import { getMockCategories } from "../../lib/mockScene";
+const CATEGORIES = ["technical_pitch", "design_review", "fundraising"] as const;
 
 export default function QuestionnairePage() {
   const router = useRouter();
-  const categories = useMemo(() => getMockCategories(10, 123), []);
+  const categories = useMemo(() => CATEGORIES.slice(), []);
   const [showForm, setShowForm] = useState<boolean>(false);
   const [busy, setBusy] = useState(false);
   const apiBase = useMemo(
@@ -28,10 +28,10 @@ export default function QuestionnairePage() {
     []
   );
 
-  const form = useForm<{ category: string; lengthSec: number }>({
+  const form = useForm<{ category: string; topic: string }>({
     defaultValues: {
       category: categories[0] ?? "General",
-      lengthSec: 120,
+      topic: "",
     },
   });
 
@@ -42,12 +42,16 @@ export default function QuestionnairePage() {
       const res = await fetch(`${apiBase}/rooms`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          category: form.getValues().category,
+          topic: form.getValues().topic,
+        }),
       });
       if (!res.ok) throw new Error(`create room failed ${res.status}`);
       const {
         id: roomId,
         bots,
+        category,
       }: {
         id: string;
         bots?: Array<{
@@ -56,6 +60,7 @@ export default function QuestionnairePage() {
           avatar?: string;
           persona?: { stance?: string; domain?: string };
         }>;
+        category?: string;
       } = await res.json();
       // Establish WS before navigating
       await wsClient.connect(roomId);
@@ -162,25 +167,19 @@ export default function QuestionnairePage() {
 
                       <FormField
                         control={form.control}
-                        name="lengthSec"
+                        name="topic"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Pitch length (seconds)</FormLabel>
+                            <FormLabel>
+                              Topic (what&apos;s your talk about?)
+                            </FormLabel>
                             <FormControl>
-                              <div className="flex items-center gap-3">
-                                <Slider
-                                  min={60}
-                                  max={300}
-                                  step={30}
-                                  value={[field.value]}
-                                  onValueChange={(vals) =>
-                                    field.onChange(vals[0])
-                                  }
-                                />
-                                <span className="w-12 text-right text-sm tabular-nums">
-                                  {field.value}
-                                </span>
-                              </div>
+                              <textarea
+                                className="w-full min-h-24 rounded-md border bg-background px-3 py-2 text-sm"
+                                placeholder="e.g., Building a realtime AI presenter with WebGPU and WASM"
+                                value={field.value}
+                                onChange={field.onChange}
+                              />
                             </FormControl>
                             <FormMessage />
                           </FormItem>

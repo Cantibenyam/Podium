@@ -26,6 +26,14 @@ async def _call_openai_api(messages: List[ChatCompletionMessageParam], timeout: 
         print(f"Failed to extract content from API response: {e}")
         return None
 
+AVATAR_EMOJIS = [
+    "😀","🙂","😎","🤔","👏","🤖","🧠","🧐","🤓","🧑‍💻",
+    "😄","😌","🤝","💡","🔥","👍","✨","🤯","😬","🫡"
+]
+
+ALLOWED_STANCES = ["supportive", "skeptical", "curious"]
+ALLOWED_DOMAINS = ["tech", "design", "finance"]
+
 async def generatePersonaPool(topic: str = "Public Speaking") -> Dict:
     prompt = f"""
     Generate a single persona object for a presentation on "{topic}".
@@ -48,6 +56,9 @@ async def generatePersonaPool(topic: str = "Public Speaking") -> Dict:
         try:
             persona = json.loads(contentString)
             if isinstance(persona, dict):
+                # Randomize stance/domain to increase diversity
+                persona["stance"] = random.choice(ALLOWED_STANCES)
+                persona["domain"] = random.choice(ALLOWED_DOMAINS)
                 return persona
             print("⚠️ The API response is not a valid JSON object.")
         except json.JSONDecodeError as e:
@@ -55,12 +66,13 @@ async def generatePersonaPool(topic: str = "Public Speaking") -> Dict:
 
     # Fallback if the API response is not valid
     print("⚠️ Using fallback persona data.")
+    # Fallback with random personality
     return {
         "name": "Engaged Student",
-        "stance": "supportive",
-        "domain": "tech",
-        "snark": 0.1,
-        "politeness": 0.8
+        "stance": random.choice(ALLOWED_STANCES),
+        "domain": random.choice(ALLOWED_DOMAINS),
+        "snark": round(random.uniform(0.0, 1.0), 2),
+        "politeness": round(random.uniform(0.0, 1.0), 2),
     }
 
 

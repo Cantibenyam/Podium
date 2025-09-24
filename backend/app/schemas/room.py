@@ -20,12 +20,15 @@ class Bot(BaseModel):
 
 class CreateRoomRequest(BaseModel):
     name: Optional[str] = None
+    category: Optional[str] = None
+    topic: Optional[str] = None
 
 
 class CreateRoomResponse(BaseModel):
     id: str
     createdAt: datetime
     bots: list[Bot] = []
+    category: Optional[str] = None
 
 
 class RoomState(BaseModel):

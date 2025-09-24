@@ -88,9 +88,11 @@ export const wsClient = {
       socket.send(JSON.stringify(obj));
     } catch {}
   },
-  sendClientTranscript(text: string): void {
+  sendClientTranscript(text: string, meta?: any): void {
     if (!text) return;
-    this.sendJson({ event: "client_transcript", payload: { text } });
+    const payload: any = { text };
+    if (meta && typeof meta === "object") payload.meta = meta;
+    this.sendJson({ event: "client_transcript", payload });
   },
   subscribe(handler: MessageHandler): () => void {
     handlers.add(handler);

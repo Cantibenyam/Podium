@@ -16,6 +16,7 @@ class Room:
     bots: Dict[str, ServiceBot] = field(default_factory=dict)
     coach: Optional[MegaKnight] = None
     transcript: Deque[Tuple[datetime, str]] = field(default_factory=lambda: deque(maxlen=1000))
+    category: Optional[str] = None
 
 class RoomManager:
     def __init__(self) -> None:
@@ -27,6 +28,15 @@ class RoomManager:
             room = Room(id=room_id)
             self._rooms[room_id] = room
         return room
+
+    def set_category(self, room_id: str, category: Optional[str]) -> None:
+        room = self.ensure_room(room_id)
+        room.category = category
+        room.updated_at = datetime.now(timezone.utc)
+
+    def get_category(self, room_id: str) -> Optional[str]:
+        room = self.ensure_room(room_id)
+        return room.category
 
     def add_coach_to_room(self, room_id: str, coach: MegaKnight):
         room = self.ensure_room(room_id)
@@ -65,22 +75,3 @@ class RoomManager:
     def get_service_bots_in_room(self, room_id: str) -> list[ServiceBot]:
         room = self.ensure_room(room_id)
         return list(room.bots.values())
-        room = self.ensure_room(room_id)
-        api_bots = [
-            SchemaBot(
-                id=bot.id,
-                name=bot.personality.name,
-                avatar="🤖",
-                persona=SchemaPersona(
-                    stance=bot.personality.stance,
-                    domain=bot.personality.domain,
-                )
-            ) for bot in room.bots.values()
-        ]
-        
-        return {
-            "roomId": room.id,
-            "bots": api_bots,
-            "transcript": self.get_transcript_window(room_id, seconds=60),
-            "updatedAt": room.updated_at,
-        }

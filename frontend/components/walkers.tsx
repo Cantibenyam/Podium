@@ -219,10 +219,10 @@ export function WalkableStage({
     if (n === 0 || w === 0 || h === 0)
       return [] as Array<{ x: number; y: number }>;
     const cx = w / 2;
-    const radius = Math.min(w, h) * 0.38;
-    const cy = Math.max(radius + 24, h - 24) - radius; // center so arc sits above bottom
-    const startAngle = Math.PI + Math.PI / 5; // ~200deg
-    const endAngle = -Math.PI / 5; // ~-36deg
+    const radius = Math.min(w, h) * 0.5;
+    const cy = Math.min(radius + 24, h - 24) + radius - 120; // center so arc sits above bottom
+    const startAngle = -Math.PI + Math.PI / 200; // ~200deg
+    const endAngle = Math.PI / 80; // ~-36deg
     const angles =
       n === 1
         ? [Math.PI]

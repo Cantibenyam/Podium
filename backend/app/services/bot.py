@@ -21,16 +21,18 @@ class BotState(BaseModel):
     lastReactionTs: float = 0.0
     cooldownSeconds: float = 3.0
     reactionProbability: float = 0.6  # 60% chance to react per flushed chunk
+    recentEmojis: List[str] = Field(default_factory=list)
+    recentPhrases: List[str] = Field(default_factory=list)
 
 def create_system_prompt(bot):
     return f"""You are an audience member with stance: {bot.personality.stance}, domain: {bot.personality.domain}.
 
 React to the speech with a JSON object containing:
-- "emoji_unicode": emoji code (like "U+1F610")
+- "emoji_unicode": an emoji glyph (like "🙂")
 - "micro_phrase": short phrase (max 3 words)
 - "score_delta": number from -5 to +5
 
-Example: {{"emoji_unicode": "U+1F610", "micro_phrase": "Interesting point", "score_delta": 1}}"""
+Example: {{"emoji_unicode": "🙂", "micro_phrase": "Interesting", "score_delta": 1}}"""
 
 # Reuse one async OpenAI client per process to reduce connection/setup overhead
 _shared_client: AsyncOpenAI | None = None
@@ -45,6 +47,7 @@ def get_client() -> AsyncOpenAI:
 
 class Bot(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    avatar: str = Field(default="🤖")
     personality: BotPersona
     state: BotState
 

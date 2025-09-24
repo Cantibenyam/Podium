@@ -13,6 +13,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 class DeepgramWebhook(BaseModel):
     roomId: str
     text: str
+    meta: dict | None = None
 
 
 def get_bus(request: Request) -> EventBus:
@@ -32,11 +33,11 @@ async def deepgram_webhook(
     if not body.roomId or not body.text:
         raise HTTPException(status_code=400, detail="roomId and text are required")
 
-    flushed, chunk = buffer.append(body.roomId, body.text)
+    flushed, chunk, flush_meta = buffer.append(body.roomId, body.text, body.meta or {})
     if flushed:
         await bus.publish(
             "transcript:chunk",
-            {"roomId": body.roomId, "text": chunk},
+            {"roomId": body.roomId, "text": chunk, "flush_meta": flush_meta},
         )
 
     return {"status": "accepted", "flushed": flushed}

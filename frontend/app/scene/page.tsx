@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { AudioRecorderWithVisualizer } from "@/components/voice";
@@ -30,7 +31,13 @@ export default function ScenePage() {
   >({});
   const reactionTimersRef = useRef<Record<string, number>>({});
   // Legacy ref no longer used with shared client
-  const sendTranscriptOverWs = useRef<((text: string) => void) | null>(null);
+  type TranscriptMeta = {
+    silence_preceding_s?: number | null;
+    [k: string]: unknown;
+  };
+  const sendTranscriptOverWs = useRef<
+    ((text: string, meta?: TranscriptMeta) => void) | null
+  >(null);
   const apiBase = useMemo(
     () => process.env.NEXT_PUBLIC_BACKEND_URL as string,
     []
@@ -52,26 +59,15 @@ export default function ScenePage() {
     if (!wsClient.isConnected()) return;
     const add = (msg: string) =>
       setLogs((prev) => [msg, ...prev].slice(0, 200));
-    const toEmoji = (unicodeLike?: string): string | undefined => {
-      if (!unicodeLike) return undefined;
-      // Expect format like "U+1F914"; support multiple codepoints separated by spaces
-      try {
-        const parts = unicodeLike
-          .split(/\s+/)
-          .map((p) => p.replace(/^U\+/, ""))
-          .filter(Boolean);
-        const codePoints = parts.map((h) => parseInt(h, 16));
-        return String.fromCodePoint(...codePoints);
-      } catch {
-        return undefined;
-      }
-    };
+    // Emojis are sent as glyphs from backend; no conversion needed
     add(`[ws] connected`);
-    const unsubscribe = wsClient.subscribe((data) => {
+    type WSMessage = { event?: string; payload?: Record<string, unknown> };
+    const unsubscribe = wsClient.subscribe((raw: unknown) => {
       try {
-        add(`[event] ${data.event} ${JSON.stringify(data.payload)}`);
-        const eventType = data?.event as string;
-        const payload = data?.payload ?? {};
+        const data = (raw as WSMessage) || {};
+        add(`[event] ${String(data.event)} ${JSON.stringify(data.payload)}`);
+        const eventType = String(data?.event || "");
+        const payload = (data?.payload as Record<string, unknown>) || {};
         if (eventType === "join" && payload.bot) {
           const bot = payload.bot as { id: string; name?: string };
           setBotNames((prev) => ({ ...prev, [bot.id]: bot.name || bot.id }));
@@ -83,7 +79,7 @@ export default function ScenePage() {
           const stageBot = payload.bot as {
             id: string;
             name: string;
-            avatar?: string;
+            avatar: string;
           };
           setServerBots((prev) => {
             if (prev.some((b) => b.id === stageBot.id)) return prev;
@@ -92,7 +88,7 @@ export default function ScenePage() {
               {
                 id: stageBot.id,
                 name: stageBot.name,
-                avatar: stageBot.avatar || "🤖",
+                avatar: stageBot.avatar,
               },
             ];
           });
@@ -124,9 +120,14 @@ export default function ScenePage() {
         ) {
           const botId = String(payload.botId);
           const name = botNamesRef.current[botId] || botId;
-          const text = String(payload.reaction?.micro_phrase || "").trim();
-          const emoji = toEmoji(String(payload.reaction?.emoji_unicode || ""));
-          if (text) {
+          const reaction =
+            (payload.reaction as {
+              micro_phrase?: unknown;
+              emoji_unicode?: unknown;
+            }) || {};
+          const text = String(reaction.micro_phrase || "").trim();
+          const emoji = String(reaction.emoji_unicode || "");
+          if (text || emoji) {
             setChat((prev) => [
               ...prev,
               {
@@ -149,13 +150,39 @@ export default function ScenePage() {
             }, 1600);
             reactionTimersRef.current[botId] = t;
           }
+        } else if (
+          eventType === "state" &&
+          Array.isArray((payload as any).bots)
+        ) {
+          const bots = (payload as any).bots as {
+            id: string;
+            name: string;
+            avatar?: string;
+          }[];
+          setServerBots((prev) => {
+            const existing = new Set(prev.map((b) => b.id));
+            const merged = [...prev];
+            bots.forEach((b) => {
+              if (!existing.has(b.id))
+                merged.push({
+                  id: b.id,
+                  name: b.name,
+                  avatar: b.avatar || "🤖",
+                });
+            });
+            return merged;
+          });
         }
       } catch {
         // ignore
       }
     });
-    sendTranscriptOverWs.current = (text: string) =>
-      wsClient.sendClientTranscript(text);
+    // request state in case we connected after initial bot joins
+    try {
+      wsClient.sendJson({ event: "state_request", payload: {} });
+    } catch {}
+    sendTranscriptOverWs.current = (text: string, meta?: TranscriptMeta) =>
+      wsClient.sendClientTranscript(text, meta);
     return () => {
       unsubscribe();
       sendTranscriptOverWs.current = null;
@@ -232,8 +259,8 @@ export default function ScenePage() {
             <AudioRecorderWithVisualizer
               roomId={roomId || undefined}
               apiBase={apiBase}
-              sendTranscript={(text: string) =>
-                sendTranscriptOverWs.current?.(text)
+              sendTranscript={(text: string, meta?: TranscriptMeta) =>
+                sendTranscriptOverWs.current?.(text, meta)
               }
             />
           </div>
