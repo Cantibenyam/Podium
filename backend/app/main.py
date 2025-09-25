@@ -18,16 +18,20 @@ from app.state.room_manager import RoomManager
 from app.core import registry
 from typing import Optional
 from app.services.reaction_config import (
-    CATEGORIES,
-    EMOJI,
-    TEMPLATES,
-    ESCALATE_ON_QUESTION_STANCES,
+    STAGE1_DELAY_MIN_S,
+    STAGE1_DELAY_MAX_S,
     STAGE2_TIMEOUT_S,
-    DEFAULT_PHRASE,
     choose_emoji_phrase,
     score_text,
     map_score_to_bucket,
     get_phrases,
+    adjust_bucket_for_meta,
+    select_phrase_for_bucket,
+    apply_recent_emoji_lru,
+    apply_recent_phrase_lru,
+    should_suppress_fire,
+    should_escalate,
+    compute_reaction_probability,
 )
 
 app = FastAPI(title="Podium Backend", version="0.1.0")
@@ -76,14 +80,18 @@ async def _on_transcript_chunk(payload: dict) -> None:
     text_chunk = payload.get("text", "")
     flush_meta = payload.get("flush_meta") or {}
 
-    app.state.room_manager.append_transcript(room_id, text_chunk)
+    # Get tail context BEFORE appending current chunk to avoid duplication
+    tail_context = app.state.room_manager.get_transcript_tail_chars(room_id, 200)
     await app.state.ws_manager.broadcast_json(
         room_id, {"event": "transcript", "payload": payload}
     )
 
     bots_in_room = app.state.room_manager.get_service_bots_in_room(room_id)
 
-    def stage1_react(bot: Bot, text: str, fm: dict) -> dict:
+    async def stage1_react(bot: Bot, text: str, fm: dict) -> dict:
+        """Generate a quick, local reaction (Stage-1) without model calls.
+        Uses scoring, bucket mapping, and lightweight adjustments for delivery cues.
+        """
         is_question = bool(fm.get("question"))
         is_exclaim = bool(fm.get("exclaim"))
         stutters = int(fm.get("stutter_count") or 0)
@@ -93,32 +101,37 @@ async def _on_transcript_chunk(payload: dict) -> None:
         stance = getattr(bot.personality, "stance", "supportive")
         domain = getattr(bot.personality, "domain", "tech")
 
+        # Score and map to coarse sentiment bucket
         score = score_text(text, cat, stance, domain, is_question, is_exclaim)
         bucket = map_score_to_bucket(score, is_question)
 
-        if stance == "supportive" and bucket == "neutral":
-            bucket = "positive"
-        elif stance == "skeptical" and bucket == "neutral":
-            bucket = "curious"
-        if stutters > 0:
-            bucket = "positive" if stance == "supportive" else "curious"
-        if rhet and bucket in ("neutral", "curious"):
-            bucket = "anticipation"
+        # Adjust bucket for stance and delivery cues
+        bucket = adjust_bucket_for_meta(bucket, stance, stutters, rhet)
 
+        # Choose emoji and phrase for bucket
         emoji, phrase, delta = choose_emoji_phrase(bucket, stance, domain, stutters, rhet)
-        # ensure phrase variance; rotate within available phrases deterministically
-        if phrase:
-            phrases = get_phrases(stance, bucket, domain)
-            if len(phrases) > 1:
-                # pick next phrase based on recent history length to avoid repeats
-                idx = (len(getattr(bot.state, "recentEmojis", [])) or 0) % len(phrases)
-                phrase = phrases[idx]
-        # anti-repetition LRU (size 5)
+
+        # Prefer random phrase selection avoiding recent repeats
+        phrase = select_phrase_for_bucket(
+            stance,
+            bucket,
+            domain,
+            len(getattr(bot.state, "recentEmojis", [])),
+            getattr(bot.state, "recentPhrases", []),
+        ) or phrase
+
+        # Apply recent-emoji LRU to reduce repetition and update state
         recent = getattr(bot.state, "recentEmojis", [])
-        if emoji in recent and len(recent) > 0:
-            emoji = recent[-1]
-        recent = (recent + [emoji])[-5:]
+        emoji, recent = apply_recent_emoji_lru(emoji, recent)
         bot.state.recentEmojis = recent  # type: ignore[attr-defined]
+
+        # Track recent phrases to avoid repetition
+        recent_phrases = getattr(bot.state, "recentPhrases", [])
+        phrase, recent_phrases = apply_recent_phrase_lru(phrase, recent_phrases)
+        bot.state.recentPhrases = recent_phrases  # type: ignore[attr-defined]
+
+        # timer for realistic reaction time
+        await asyncio.sleep(random.uniform(STAGE1_DELAY_MIN_S, STAGE1_DELAY_MAX_S))
 
         return {"emoji_unicode": emoji, "micro_phrase": phrase, "score_delta": delta}
 
@@ -130,31 +143,41 @@ async def _on_transcript_chunk(payload: dict) -> None:
                 start = asyncio.get_event_loop().time()
                 stance = getattr(bot.personality, "stance", "supportive")
                 is_question = bool(flush_meta.get("question"))
-                # suppression: 30% chance to ignore entirely
-                if random.random() < getattr(__import__('app.services.reaction_config', fromlist=['FIRE_SUPPRESSION_PROB']), 'FIRE_SUPPRESSION_PROB', 0.30):
+                # suppression: use configured probability to ignore entirely
+                if random.random() < 0.45:
                     reaction = None
                 else:
                     # base: allowed only on questions for certain stances
-                    escalate_allowed = is_question and (stance in ESCALATE_ON_QUESTION_STANCES)
-                    # bias: additional 30% push toward Stage-2 when allowed
-                    bias = getattr(__import__('app.services.reaction_config', fromlist=['STAGE2_BIAS_PROB']), 'STAGE2_BIAS_PROB', 0.30)
-                    escalate = (random.random() < 0.5) or (escalate_allowed and random.random() < bias)
+                    escalate, escalate_allowed = should_escalate(is_question, stance)
 
+                    stage1_used = False
                     if escalate and escalate_allowed:
                         try:
+                            # Include prior transcript tail to provide brief context
+                            stage2_input = f"{tail_context}{text_chunk}"
                             reaction = await asyncio.wait_for(
-                                bot.generateReaction(text_chunk), timeout=STAGE2_TIMEOUT_S
+                                bot.generateReaction(stage2_input), timeout=STAGE2_TIMEOUT_S
                             )
                             if reaction is None:
-                                reaction = stage1_react(bot, text_chunk, flush_meta)
+                                reaction = await stage1_react(bot, text_chunk, flush_meta)
+                                stage1_used = True
                         except Exception:
-                            reaction = stage1_react(bot, text_chunk, flush_meta)
+                            reaction = await stage1_react(bot, text_chunk, flush_meta)
+                            stage1_used = True
                     else:
-                        reaction = stage1_react(bot, text_chunk, flush_meta)
+                        # running supression prob again to increase randomness
+                        if should_suppress_fire():
+                            reaction = None
+                        else:
+                            reaction = await stage1_react(bot, text_chunk, flush_meta)
+                            stage1_used = True
 
-                prob_boost = 0.15 if int(flush_meta.get("stutter_count") or 0) > 0 and stance == "supportive" else 0.0
-                cooldown = getattr(bot.state, 'cooldownSeconds', 3.0)
-                prob = min(1.0, max(0.0, getattr(bot.state, 'reactionProbability', 0.6) + prob_boost))
+                cooldown = getattr(bot.state, 'cooldownSeconds', 6.0)
+                prob = compute_reaction_probability(
+                    getattr(bot.state, 'reactionProbability', 0.6),
+                    int(flush_meta.get("stutter_count") or 0),
+                    stance,
+                )
             except asyncio.TimeoutError:
                 print(f"[bot] reaction TIMEOUT room={room_id} bot={bot.id}")
                 reaction = {
@@ -176,8 +199,10 @@ async def _on_transcript_chunk(payload: dict) -> None:
                 should_react = True
                 try:
                     last_ts = bot.state.lastReactionTs  # type: ignore[attr-defined]
+
                     cooldown = getattr(bot.state, 'cooldownSeconds', 3.0)
                     prob = locals().get('prob', getattr(bot.state, 'reactionProbability', 0.6))
+
                     if now - last_ts < cooldown:
                         should_react = False
                     elif random.random() > prob:
@@ -196,8 +221,7 @@ async def _on_transcript_chunk(payload: dict) -> None:
                             "botId": bot.id,
                             "decision": {
                                 "is_question": bool(flush_meta.get("question")),
-                                "escalate_question": escalate_question if 'escalate_question' in locals() else False,
-                                "escalated": escalate if 'escalate' in locals() else False,
+                                "escalated": bool('stage1_used' in locals() and not stage1_used),
                                 "timeout_s": STAGE2_TIMEOUT_S if ('escalate' in locals() and escalate) else 0,
                             },
                             "reaction": reaction,
@@ -212,9 +236,18 @@ async def _on_transcript_chunk(payload: dict) -> None:
             else:
                 print(f"[bot] NO REACTION room={room_id} bot={bot.id}")
 
+        tasks = []
         for bot in bots_in_room:
             print(f"[bot] start reaction room={room_id} bot={bot.id}")
-            asyncio.create_task(one_bot_react(bot))
+            tasks.append(asyncio.create_task(one_bot_react(bot)))
+
+        try:
+            if tasks:
+                await asyncio.gather(*tasks)
+        finally:
+            # Append transcript AFTER reactions are published to avoid duplicating
+            # the current chunk when constructing Stage-2 context (tail + chunk)
+            app.state.room_manager.append_transcript(room_id, text_chunk)
 
     asyncio.create_task(generate_and_publish_reactions())
 

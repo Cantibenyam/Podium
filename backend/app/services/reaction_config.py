@@ -11245,13 +11245,64 @@ EMOJI = {
 }
 
 ESCALATE_ON_QUESTION_STANCES = ["curious", "supportive"]
-STAGE2_TIMEOUT_S = 5
+STAGE2_TIMEOUT_S = 7
 DEFAULT_PHRASE = {
   "positive": "nice!",
   "negative": "hmm",
   "curious": "hmm?",
   "neutral": "ok",
   "anticipation": ""
+}
+DEFAULT_PHRASES = {
+  "positive": [
+    "nice!",
+    "love it",
+    "good point",
+    "well said",
+    "yes!",
+    "makes sense",
+    "great",
+    "cool",
+    "👏",
+  ],
+  "negative": [
+    "hmm",
+    "not sure",
+    "meh",
+    "doubt it",
+    "hmm...",
+  ],
+  "curious": [
+    "why?",
+    "how so?",
+    "what if?",
+    "details?",
+    "explain?",
+    "hmm?",
+    "um...",
+    "uh...",
+    "mm...",
+    "so...",
+  ],
+  "anticipation": [
+    "...",
+    "go on",
+    "listening",
+    "waiting",
+    "interesting...",
+    "um...",
+    "mm...",
+  ],
+  "neutral": [
+    "ok",
+    "got it",
+    "alright",
+    "noted",
+    "hmm",
+    "...",
+    "um...",
+    "mm...",
+  ],
 }
 ENCOURAGE = [
   [
@@ -11267,15 +11318,19 @@ ENCOURAGE = [
 ]
 
 # Reaction probability tuning (edit to tweak behavior)
-FIRE_SUPPRESSION_PROB = 0.30  # 30% chance to ignore a reaction opportunity
-STAGE2_BIAS_PROB = 0.30        # additional 30% bias toward Stage-2 when allowed
+FIRE_SUPPRESSION_PROB = 0.35  # 45% chance to ignore a reaction opportunity
+STAGE2_BIAS_PROB = 0.35        # additional 35% bias toward Stage-2 when allowed
 
 # === Helper functions required by main.py ===
 def get_phrases(stance: str, bucket: str, domain: str) -> list[str]:
     try:
         key = (stance, "pos" if bucket == "positive" else bucket, domain)
         tpl = globals().get("TEMPLATES", {})
-        return tpl.get(key, [])  # type: ignore[arg-type]
+        phrases = tpl.get(key, [])  # type: ignore[arg-type]
+        if phrases:
+            return phrases
+        defaults = globals().get("DEFAULT_PHRASES", {})
+        return list(defaults.get(bucket, []))  # type: ignore[index]
     except Exception:
         return []
 
@@ -11349,3 +11404,111 @@ def choose_emoji_phrase(
 
     choice = pool[0]
     return choice[0], phrase, choice[2]
+
+# === Additional helpers to simplify main.py ===
+
+# Stage-1 reaction delay bounds (seconds)
+STAGE1_DELAY_MIN_S: float = 0.5
+STAGE1_DELAY_MAX_S: float = 3.0
+
+def adjust_bucket_for_meta(
+    bucket: str,
+    stance: str,
+    stutters: int,
+    rhet: bool,
+) -> str:
+    """Adjusts the bucket based on stance and delivery cues."""
+    adjusted = bucket
+    if stance == "supportive" and adjusted == "neutral":
+        adjusted = "positive"
+    elif stance == "skeptical" and adjusted == "neutral":
+        adjusted = "curious"
+    if stutters > 0:
+        adjusted = "positive" if stance == "supportive" else "curious"
+    if rhet and adjusted in ("neutral", "curious"):
+        adjusted = "anticipation"
+    return adjusted
+
+def select_phrase_for_bucket(
+    stance: str,
+    bucket: str,
+    domain: str,
+    recent_emojis_len: int,
+    recent_phrases: list[str] | None = None,
+) -> str:
+    """Select a phrase at random, avoiding very recent repeats; fallback to deterministic rotation."""
+    phrases = get_phrases(stance, bucket, domain)
+    default_phrase = globals().get("DEFAULT_PHRASE", {}).get(bucket, "")  # type: ignore[index]
+    if not phrases:
+        return default_phrase
+    # Attempt random selection first, skipping recent phrases (LRU up to 5)
+    try:
+        import random as _random
+        recent = set((recent_phrases or [])[-5:])
+        candidates = [p for p in phrases if p not in recent]
+        if candidates:
+            return _random.choice(candidates)
+        # If all are recent, still choose randomly
+        return _random.choice(phrases)
+    except Exception:
+        # Fallback: deterministic rotation
+        if len(phrases) == 1:
+            return phrases[0]
+        idx = (recent_emojis_len or 0) % len(phrases)
+        return phrases[idx]
+
+def apply_recent_emoji_lru(selected_emoji: str, recent: list[str], max_size: int = 5) -> tuple[str, list[str]]:
+    """Prevent repetition by reusing most recent emoji if selected exists; maintain LRU of recent emojis."""
+    emoji = selected_emoji
+    if selected_emoji in recent and len(recent) > 0:
+        emoji = recent[-1]
+    updated = (recent + [emoji])[-max_size:]
+    return emoji, updated
+
+def apply_recent_phrase_lru(selected_phrase: str, recent: list[str], max_size: int = 7) -> tuple[str, list[str]]:
+    """Maintain a list of recent phrases, capping the history to avoid repetition."""
+    try:
+        updated = (recent + [selected_phrase])[-max_size:]
+        return selected_phrase, updated
+    except Exception:
+        return selected_phrase, recent
+
+def should_suppress_fire() -> bool:
+    """Randomly decide to suppress a reaction opportunity based on configured probability."""
+    try:
+        import random as _random
+        return _random.random() < float(globals().get("FIRE_SUPPRESSION_PROB", 0.0))
+    except Exception:
+        return False
+
+def should_escalate(is_question: bool, stance: str) -> tuple[bool, bool]:
+    """Return (escalate, escalate_allowed) based on stance and configured bias when a question is detected."""
+    try:
+        escalate_allowed = bool(is_question) and (stance in globals().get("ESCALATE_ON_QUESTION_STANCES", set()))
+    except Exception:
+        escalate_allowed = bool(is_question)
+    if not escalate_allowed:
+        return False, escalate_allowed
+    try:
+        import random as _random
+        escalate_bias = float(globals().get("STAGE2_BIAS_PROB", 0.0))
+        return (_random.random() < escalate_bias), escalate_allowed
+    except Exception:
+        return False, escalate_allowed
+
+def compute_reaction_probability(
+    base_probability: float,
+    stutter_count: int,
+    stance: str,
+) -> float:
+    """Compute final reaction probability with a small boost for supportive stance under stutter."""
+    try:
+        boost = 0.15 if (stutter_count > 0 and stance == "supportive") else 0.0
+        prob = base_probability + boost
+        if prob < 0.0:
+            return 0.0
+        if prob > 1.0:
+            return 1.0
+        return prob
+    except Exception:
+        return base_probability

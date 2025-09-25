@@ -61,6 +61,29 @@ class RoomManager:
         room.transcript.append((datetime.now(timezone.utc), text))
         room.updated_at = datetime.now(timezone.utc)
 
+    def get_transcript_tail_chars(self, room_id: str, max_chars: int) -> str:
+        room = self.ensure_room(room_id)
+        if max_chars <= 0 or not room.transcript:
+            return ""
+        collected: list[str] = []
+        remaining = max_chars
+        # Walk from the end to efficiently collect only what's needed
+        for _, txt in reversed(room.transcript):
+            if remaining <= 0:
+                break
+            if not txt:
+                continue
+            if len(txt) <= remaining:
+                collected.append(txt)
+                remaining -= len(txt)
+            else:
+                collected.append(txt[-remaining:])
+                remaining = 0
+                break
+        # We collected in reverse order; reverse back to chronological and join
+        collected.reverse()
+        return "".join(collected)
+
     def get_transcript_window(self, room_id: str, seconds: int) -> str:
         room = self.ensure_room(room_id)
         if not room.transcript:

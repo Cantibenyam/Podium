@@ -33,7 +33,7 @@ async def create_room(request: Request, body: CreateRoomRequest | None = None) -
     bots_api: list[SchemaBot] = []
 
     # Create bots concurrently; reuse persona generation here rather than inside add_bot
-    num_bots = 10
+    num_bots = 18
     try:
         topic = None
         try:

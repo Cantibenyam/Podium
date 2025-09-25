@@ -3,8 +3,12 @@ import json
 import uuid
 from typing import List, Tuple, Literal
 from pydantic import BaseModel, Field
-from openai import AsyncOpenAI, APIError
+from openai import OpenAI, APIError
 from openai.types.chat import ChatCompletionMessageParam
+
+# OpenRouter configuration (inline constants per user request)
+OPENROUTER_API_KEY = "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"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 class BotPersona(BaseModel):
     name: str
@@ -20,7 +24,7 @@ class BotState(BaseModel):
     engagementHistory: List[Tuple[float, float]] = Field(default_factory=list)
     lastReactionTs: float = 0.0
     cooldownSeconds: float = 3.0
-    reactionProbability: float = 0.6  # 60% chance to react per flushed chunk
+    reactionProbability: float = 1 # 100% chance to react per flushed chunk
     recentEmojis: List[str] = Field(default_factory=list)
     recentPhrases: List[str] = Field(default_factory=list)
 
@@ -35,13 +39,16 @@ React to the speech with a JSON object containing:
 Example: {{"emoji_unicode": "🙂", "micro_phrase": "Interesting", "score_delta": 1}}"""
 
 # Reuse one async OpenAI client per process to reduce connection/setup overhead
-_shared_client: AsyncOpenAI | None = None
+_shared_client: OpenAI | None = None
 
 
-def get_client() -> AsyncOpenAI:
+def get_client() -> OpenAI:
     global _shared_client
     if _shared_client is None:
-        _shared_client = AsyncOpenAI()
+        _shared_client = OpenAI(
+            base_url=OPENROUTER_BASE_URL,
+            api_key=OPENROUTER_API_KEY,
+        )
     return _shared_client
 
 
@@ -62,11 +69,12 @@ class Bot(BaseModel):
         ]
 
         try:
-            response = await client.chat.completions.create(
-                model="gpt-5-nano-2025-08-07",
+            response = client.chat.completions.create(
+                model='mistralai/ministral-8b', # 'inception/mercury-coder' lowest throughoutput, # 'mistralai/ministral-8b' lowest latency, # 'x-ai/grok-code-fast-1',
                 messages=messages,
                 response_format={"type": "json_object"},
                 temperature=1,
+                max_tokens=60
             )
             
             content_string = response.choices[0].message.content

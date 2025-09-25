@@ -157,7 +157,7 @@ export default function ScenePage() {
           const bots = (payload as any).bots as {
             id: string;
             name: string;
-            avatar?: string;
+            avatar: string;
           }[];
           setServerBots((prev) => {
             const existing = new Set(prev.map((b) => b.id));
@@ -167,7 +167,7 @@ export default function ScenePage() {
                 merged.push({
                   id: b.id,
                   name: b.name,
-                  avatar: b.avatar || "🤖",
+                  avatar: b.avatar,
                 });
             });
             return merged;
@@ -193,22 +193,12 @@ export default function ScenePage() {
   // reactions handled inside walkers speech bubbles; grid logic removed
 
   return (
-    <div className="h-full min-h-0 overflow-hidden grid grid-rows-[1fr_auto] grid-cols-[80px_1fr] gap-3 p-4 md:grid-cols-[110px_1fr] md:gap-4 md:p-5">
-      {/* Coach bubble (left) */}
-      <aside className="row-start-1 col-start-1 flex items-center justify-center">
-        <div
-          className="size-20 rounded-full border bg-card text-card-foreground flex items-center justify-center text-xs font-medium"
-          aria-label="Coach"
-        >
-          Coach
-        </div>
-      </aside>
-
+    <div className="h-full min-h-0 overflow-hidden flex flex-1 flex-col gap-4 p-5">
       {/* Walkable stage (center) */}
-      <main className="row-start-1 col-start-2 relative">
+      <main className="h-full relative">
         {/* Toggle button */}
         <button
-          className="absolute top-2 left-2 z-50 inline-flex items-center justify-center rounded-md border bg-card text-card-foreground px-3 py-1 text-xs hover:bg-accent hover:text-accent-foreground"
+          className="absolute top-2 right-2 z-50 inline-flex items-center justify-center rounded-md border bg-card text-card-foreground px-3 py-1 text-xs hover:bg-accent hover:text-accent-foreground"
           onClick={() => setShowStage((s) => !s)}
         >
           {showStage ? "Show Logs" : "Show Stage"}
@@ -253,8 +243,16 @@ export default function ScenePage() {
       </main>
 
       {/* Voice visualization + transcript (bottom) */}
-      <footer className="col-span-2">
-        <div className="rounded-xl py-3 px-4 flex items-center justify-center text-sm ">
+      <footer className="flex flex-row relative">
+        <aside className="absolute bottom-6 left-4 flex items-center justify-center">
+          <div
+            className="size-20 rounded-full border bg-card text-card-foreground flex items-center justify-center text-xs font-medium"
+            aria-label="Coach"
+          >
+            Coach
+          </div>
+        </aside>
+        <div className="flex-1 rounded-xl py-3 flex items-center justify-center text-sm ">
           <div className="w-full max-w-5xl mx-auto">
             <AudioRecorderWithVisualizer
               roomId={roomId || undefined}
